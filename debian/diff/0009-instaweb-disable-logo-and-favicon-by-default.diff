@@ -1,0 +1,34 @@
+From d98884598f3952c9dc6237456b00dffe958ad8da Mon Sep 17 00:00:00 2001
+From: Jonathan Nieder <jrnieder@gmail.com>
+Date: Fri, 3 Sep 2010 19:45:35 -0500
+Subject: instaweb: disable logo and favicon by default
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Avoid 404 errors due to the missing git logo and favicon.
+
+Reported-by: Uwe Kleine-König <u.kleine-koenig@pengutronix.de>
+Cc: Jakub Narebski <jnareb@gmail.com>
+Acked-by: Eric Wong <normalperson@yhbt.net>
+Signed-off-by: Jonathan Nieder <jrnieder@gmail.com>
+---
+ git-instaweb.sh |    2 ++
+ 1 files changed, 2 insertions(+), 0 deletions(-)
+
+diff --git a/git-instaweb.sh b/git-instaweb.sh
+index faf9868..c3bc7da 100755
+--- a/git-instaweb.sh
++++ b/git-instaweb.sh
+@@ -389,6 +389,8 @@ s#(my|our) \$gitbin =.*#$1 \$gitbin = "'$GIT_EXEC_PATH'";#;
+ s#(my|our) \$projects_list =.*#$1 \$projects_list = \$projectroot;#;
+ s#(my|our) \$git_temp =.*#$1 \$git_temp = "'$fqgitdir/gitweb/tmp'";#;
+ s#(my|our) \$GITWEB_CONFIG_SYSTEM =.*#$1 \$GITWEB_CONFIG_SYSTEM = "";#;
++s#(my|our) \$favicon =.*#$1 \$favicon = undef;#;
++s#(my|our) \$logo =.*#$1 \$logo = undef;#;
+ '
+ 
+ gitweb_cgi () {
+-- 
+1.7.2.2
+
