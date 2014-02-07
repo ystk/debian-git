@@ -7,6 +7,7 @@
 #include "run-command.h"
 #include "string-list.h"
 #include "url.h"
+#include "argv-array.h"
 
 static const char content_type[] = "Content-Type";
 static const char content_length[] = "Content-Length";
@@ -271,16 +272,13 @@ static struct rpc_service *select_service(const char *name)
 
 static void inflate_request(const char *prog_name, int out)
 {
-	z_stream stream;
+	git_zstream stream;
 	unsigned char in_buf[8192];
 	unsigned char out_buf[8192];
 	unsigned long cnt = 0;
-	int ret;
 
 	memset(&stream, 0, sizeof(stream));
-	ret = inflateInit2(&stream, (15 + 16));
-	if (ret != Z_OK)
-		die("cannot start zlib inflater, zlib err %d", ret);
+	git_inflate_init_gzip_only(&stream);
 
 	while (1) {
 		ssize_t n = xread(0, in_buf, sizeof(in_buf));
@@ -296,7 +294,7 @@ static void inflate_request(const char *prog_name, int out)
 			stream.next_out = out_buf;
 			stream.avail_out = sizeof(out_buf);
 
-			ret = inflate(&stream, Z_NO_FLUSH);
+			ret = git_inflate(&stream, Z_NO_FLUSH);
 			if (ret != Z_OK && ret != Z_STREAM_END)
 				die("zlib error inflating request, result %d", ret);
 
@@ -311,7 +309,7 @@ static void inflate_request(const char *prog_name, int out)
 	}
 
 done:
-	inflateEnd(&stream);
+	git_inflate_end(&stream);
 	close(out);
 }
 
@@ -320,8 +318,7 @@ static void run_service(const char **argv)
 	const char *encoding = getenv("HTTP_CONTENT_ENCODING");
 	const char *user = getenv("REMOTE_USER");
 	const char *host = getenv("REMOTE_ADDR");
-	char *env[3];
-	struct strbuf buf = STRBUF_INIT;
+	struct argv_array env = ARGV_ARRAY_INIT;
 	int gzipped_request = 0;
 	struct child_process cld;
 
@@ -335,17 +332,15 @@ static void run_service(const char **argv)
 	if (!host || !*host)
 		host = "(none)";
 
-	memset(&env, 0, sizeof(env));
-	strbuf_addf(&buf, "GIT_COMMITTER_NAME=%s", user);
-	env[0] = strbuf_detach(&buf, NULL);
-
-	strbuf_addf(&buf, "GIT_COMMITTER_EMAIL=%s@http.%s", user, host);
-	env[1] = strbuf_detach(&buf, NULL);
-	env[2] = NULL;
+	if (!getenv("GIT_COMMITTER_NAME"))
+		argv_array_pushf(&env, "GIT_COMMITTER_NAME=%s", user);
+	if (!getenv("GIT_COMMITTER_EMAIL"))
+		argv_array_pushf(&env, "GIT_COMMITTER_EMAIL=%s@http.%s",
+				 user, host);
 
 	memset(&cld, 0, sizeof(cld));
 	cld.argv = argv;
-	cld.env = (const char *const *)env;
+	cld.env = env.argv;
 	if (gzipped_request)
 		cld.in = -1;
 	cld.git_cmd = 1;
@@ -360,9 +355,7 @@ static void run_service(const char **argv)
 
 	if (finish_command(&cld))
 		exit(1);
-	free(env[0]);
-	free(env[1]);
-	strbuf_release(&buf);
+	argv_array_clear(&env);
 }
 
 static int show_text_ref(const char *name, const unsigned char *sha1,
@@ -510,9 +503,7 @@ static char* getdir(void)
 			die("GIT_PROJECT_ROOT is set but PATH_INFO is not");
 		if (daemon_avoid_alias(pathinfo))
 			die("'%s': aliased", pathinfo);
-		strbuf_addstr(&buf, root);
-		if (buf.buf[buf.len - 1] != '/')
-			strbuf_addch(&buf, '/');
+		end_url_with_slash(&buf, root);
 		if (pathinfo[0] == '/')
 			pathinfo++;
 		strbuf_addstr(&buf, pathinfo);
@@ -549,6 +540,8 @@ int main(int argc, char **argv)
 	struct service_cmd *cmd = NULL;
 	char *cmd_arg = NULL;
 	int i;
+
+	git_setup_gettext();
 
 	git_extract_argv0_path(argv[0]);
 	set_die_routine(die_webcgi);

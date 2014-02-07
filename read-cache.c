@@ -92,7 +92,7 @@ static int ce_compare_data(struct cache_entry *ce, struct stat *st)
 
 	if (fd >= 0) {
 		unsigned char sha1[20];
-		if (!index_fd(sha1, fd, st, 0, OBJ_BLOB, ce->name))
+		if (!index_fd(sha1, fd, st, OBJ_BLOB, ce->name, 0))
 			match = hashcmp(sha1, ce->sha1);
 		/* index_fd() closed the file descriptor already */
 	}
@@ -155,16 +155,6 @@ static int ce_modified_check_fs(struct cache_entry *ce, struct stat *st)
 		return TYPE_CHANGED;
 	}
 	return 0;
-}
-
-static int is_empty_blob_sha1(const unsigned char *sha1)
-{
-	static const unsigned char empty_blob_sha1[20] = {
-		0xe6,0x9d,0xe2,0x9b,0xb2,0xd1,0xd6,0x43,0x4b,0x8b,
-		0x29,0xae,0x77,0x5a,0xd8,0xc2,0xe4,0x8c,0x53,0x91
-	};
-
-	return !hashcmp(sha1, empty_blob_sha1);
 }
 
 static int ce_match_stat_basic(struct cache_entry *ce, struct stat *st)
@@ -608,6 +598,29 @@ int add_to_index(struct index_state *istate, const char *path, struct stat *st, 
 		ce->ce_mode = ce_mode_from_stat(ent, st_mode);
 	}
 
+	/* When core.ignorecase=true, determine if a directory of the same name but differing
+	 * case already exists within the Git repository.  If it does, ensure the directory
+	 * case of the file being added to the repository matches (is folded into) the existing
+	 * entry's directory case.
+	 */
+	if (ignore_case) {
+		const char *startPtr = ce->name;
+		const char *ptr = startPtr;
+		while (*ptr) {
+			while (*ptr && *ptr != '/')
+				++ptr;
+			if (*ptr == '/') {
+				struct cache_entry *foundce;
+				++ptr;
+				foundce = index_name_exists(&the_index, ce->name, ptr - ce->name, ignore_case);
+				if (foundce) {
+					memcpy((void *)startPtr, foundce->name + (startPtr - ce->name), ptr - startPtr);
+					startPtr = ptr;
+				}
+			}
+		}
+	}
+
 	alias = index_name_exists(istate, ce->name, ce_namelen(ce), ignore_case);
 	if (alias && !ce_stage(alias) && !ie_match_stat(istate, alias, st, ce_option)) {
 		/* Nothing changed, really */
@@ -618,7 +631,7 @@ int add_to_index(struct index_state *istate, const char *path, struct stat *st, 
 		return 0;
 	}
 	if (!intent_only) {
-		if (index_path(ce->sha1, path, st, 1))
+		if (index_path(ce->sha1, path, st, HASH_WRITE_OBJECT))
 			return error("unable to index file %s", path);
 	} else
 		record_intent_to_add(ce);
@@ -683,30 +696,9 @@ int ce_same_name(struct cache_entry *a, struct cache_entry *b)
 	return ce_namelen(b) == len && !memcmp(a->name, b->name, len);
 }
 
-int ce_path_match(const struct cache_entry *ce, const char **pathspec)
+int ce_path_match(const struct cache_entry *ce, const struct pathspec *pathspec)
 {
-	const char *match, *name;
-	int len;
-
-	if (!pathspec)
-		return 1;
-
-	len = ce_namelen(ce);
-	name = ce->name;
-	while ((match = *pathspec++) != NULL) {
-		int matchlen = strlen(match);
-		if (matchlen > len)
-			continue;
-		if (memcmp(name, match, matchlen))
-			continue;
-		if (matchlen && name[matchlen-1] == '/')
-			return 1;
-		if (name[matchlen] == '/' || !name[matchlen])
-			return 1;
-		if (!matchlen)
-			return 1;
-	}
-	return 0;
+	return match_pathspec_depth(pathspec, ce->name, ce_namelen(ce), 0, NULL);
 }
 
 /*
@@ -724,11 +716,12 @@ static int verify_dotfile(const char *rest)
 	 * has already been discarded, we now test
 	 * the rest.
 	 */
-	switch (*rest) {
+
 	/* "." is not allowed */
-	case '\0': case '/':
+	if (*rest == '\0' || is_dir_sep(*rest))
 		return 0;
 
+	switch (*rest) {
 	/*
 	 * ".git" followed by  NUL or slash is bad. This
 	 * shares the path end test with the ".." case.
@@ -741,7 +734,7 @@ static int verify_dotfile(const char *rest)
 		rest += 2;
 	/* fallthrough */
 	case '.':
-		if (rest[1] == '\0' || rest[1] == '/')
+		if (rest[1] == '\0' || is_dir_sep(rest[1]))
 			return 0;
 	}
 	return 1;
@@ -751,23 +744,19 @@ int verify_path(const char *path)
 {
 	char c;
 
+	if (has_dos_drive_prefix(path))
+		return 0;
+
 	goto inside;
 	for (;;) {
 		if (!c)
 			return 1;
-		if (c == '/') {
+		if (is_dir_sep(c)) {
 inside:
 			c = *path++;
-			switch (c) {
-			default:
-				continue;
-			case '/': case '\0':
-				break;
-			case '.':
-				if (verify_dotfile(path))
-					continue;
-			}
-			return 0;
+			if ((c == '.' && !verify_dotfile(path)) ||
+			    is_dir_sep(c) || c == '\0')
+				return 0;
 		}
 		c = *path++;
 	}
@@ -1002,7 +991,8 @@ int add_index_entry(struct index_state *istate, struct cache_entry *ce, int opti
  */
 static struct cache_entry *refresh_cache_ent(struct index_state *istate,
 					     struct cache_entry *ce,
-					     unsigned int options, int *err)
+					     unsigned int options, int *err,
+					     int *changed_ret)
 {
 	struct stat st;
 	struct cache_entry *updated;
@@ -1034,6 +1024,8 @@ static struct cache_entry *refresh_cache_ent(struct index_state *istate,
 	}
 
 	changed = ie_match_stat(istate, ce, &st, options);
+	if (changed_ret)
+		*changed_ret = changed;
 	if (!changed) {
 		/*
 		 * The path is unchanged.  If we were told to ignore
@@ -1081,17 +1073,17 @@ static struct cache_entry *refresh_cache_ent(struct index_state *istate,
 }
 
 static void show_file(const char * fmt, const char * name, int in_porcelain,
-		      int * first, char *header_msg)
+		      int * first, const char *header_msg)
 {
 	if (in_porcelain && *first && header_msg) {
 		printf("%s\n", header_msg);
-		*first=0;
+		*first = 0;
 	}
 	printf(fmt, name);
 }
 
 int refresh_index(struct index_state *istate, unsigned int flags, const char **pathspec,
-		  char *seen, char *header_msg)
+		  char *seen, const char *header_msg)
 {
 	int i;
 	int has_errors = 0;
@@ -1103,18 +1095,30 @@ int refresh_index(struct index_state *istate, unsigned int flags, const char **p
 	int first = 1;
 	int in_porcelain = (flags & REFRESH_IN_PORCELAIN);
 	unsigned int options = really ? CE_MATCH_IGNORE_VALID : 0;
-	const char *needs_update_fmt;
-	const char *needs_merge_fmt;
+	const char *modified_fmt;
+	const char *deleted_fmt;
+	const char *typechange_fmt;
+	const char *added_fmt;
+	const char *unmerged_fmt;
 
-	needs_update_fmt = (in_porcelain ? "M\t%s\n" : "%s: needs update\n");
-	needs_merge_fmt = (in_porcelain ? "U\t%s\n" : "%s: needs merge\n");
+	modified_fmt = (in_porcelain ? "M\t%s\n" : "%s: needs update\n");
+	deleted_fmt = (in_porcelain ? "D\t%s\n" : "%s: needs update\n");
+	typechange_fmt = (in_porcelain ? "T\t%s\n" : "%s needs update\n");
+	added_fmt = (in_porcelain ? "A\t%s\n" : "%s needs update\n");
+	unmerged_fmt = (in_porcelain ? "U\t%s\n" : "%s: needs merge\n");
 	for (i = 0; i < istate->cache_nr; i++) {
 		struct cache_entry *ce, *new;
 		int cache_errno = 0;
+		int changed = 0;
+		int filtered = 0;
 
 		ce = istate->cache[i];
 		if (ignore_submodules && S_ISGITLINK(ce->ce_mode))
 			continue;
+
+		if (pathspec &&
+		    !match_pathspec(pathspec, ce->name, strlen(ce->name), 0, seen))
+			filtered = 1;
 
 		if (ce_stage(ce)) {
 			while ((i < istate->cache_nr) &&
@@ -1123,18 +1127,22 @@ int refresh_index(struct index_state *istate, unsigned int flags, const char **p
 			i--;
 			if (allow_unmerged)
 				continue;
-			show_file(needs_merge_fmt, ce->name, in_porcelain, &first, header_msg);
+			if (!filtered)
+				show_file(unmerged_fmt, ce->name, in_porcelain,
+					  &first, header_msg);
 			has_errors = 1;
 			continue;
 		}
 
-		if (pathspec && !match_pathspec(pathspec, ce->name, strlen(ce->name), 0, seen))
+		if (filtered)
 			continue;
 
-		new = refresh_cache_ent(istate, ce, options, &cache_errno);
+		new = refresh_cache_ent(istate, ce, options, &cache_errno, &changed);
 		if (new == ce)
 			continue;
 		if (!new) {
+			const char *fmt;
+
 			if (not_new && cache_errno == ENOENT)
 				continue;
 			if (really && cache_errno == EINVAL) {
@@ -1146,7 +1154,17 @@ int refresh_index(struct index_state *istate, unsigned int flags, const char **p
 			}
 			if (quiet)
 				continue;
-			show_file(needs_update_fmt, ce->name, in_porcelain, &first, header_msg);
+
+			if (cache_errno == ENOENT)
+				fmt = deleted_fmt;
+			else if (ce->ce_flags & CE_INTENT_TO_ADD)
+				fmt = added_fmt; /* must be before other checks */
+			else if (changed & TYPE_CHANGED)
+				fmt = typechange_fmt;
+			else
+				fmt = modified_fmt;
+			show_file(fmt,
+				  ce->name, in_porcelain, &first, header_msg);
 			has_errors = 1;
 			continue;
 		}
@@ -1158,7 +1176,7 @@ int refresh_index(struct index_state *istate, unsigned int flags, const char **p
 
 static struct cache_entry *refresh_cache_entry(struct cache_entry *ce, int really)
 {
-	return refresh_cache_ent(&the_index, ce, really, NULL);
+	return refresh_cache_ent(&the_index, ce, really, NULL, NULL);
 }
 
 static int verify_hdr(struct cache_header *hdr, unsigned long size)
@@ -1203,10 +1221,35 @@ int read_index(struct index_state *istate)
 	return read_index_from(istate, get_index_file());
 }
 
-static void convert_from_disk(struct ondisk_cache_entry *ondisk, struct cache_entry *ce)
+static struct cache_entry *create_from_disk(struct ondisk_cache_entry *ondisk)
 {
+	struct cache_entry *ce;
 	size_t len;
 	const char *name;
+	unsigned int flags;
+
+	/* On-disk flags are just 16 bits */
+	flags = ntohs(ondisk->flags);
+	len = flags & CE_NAMEMASK;
+
+	if (flags & CE_EXTENDED) {
+		struct ondisk_cache_entry_extended *ondisk2;
+		int extended_flags;
+		ondisk2 = (struct ondisk_cache_entry_extended *)ondisk;
+		extended_flags = ntohs(ondisk2->flags2) << 16;
+		/* We do not yet understand any bit out of CE_EXTENDED_FLAGS */
+		if (extended_flags & ~CE_EXTENDED_FLAGS)
+			die("Unknown index entry format %08x", extended_flags);
+		flags |= extended_flags;
+		name = ondisk2->name;
+	}
+	else
+		name = ondisk->name;
+
+	if (len == CE_NAMEMASK)
+		len = strlen(name);
+
+	ce = xmalloc(cache_entry_size(len));
 
 	ce->ce_ctime.sec = ntohl(ondisk->ctime.sec);
 	ce->ce_mtime.sec = ntohl(ondisk->mtime.sec);
@@ -1218,48 +1261,13 @@ static void convert_from_disk(struct ondisk_cache_entry *ondisk, struct cache_en
 	ce->ce_uid   = ntohl(ondisk->uid);
 	ce->ce_gid   = ntohl(ondisk->gid);
 	ce->ce_size  = ntohl(ondisk->size);
-	/* On-disk flags are just 16 bits */
-	ce->ce_flags = ntohs(ondisk->flags);
+	ce->ce_flags = flags;
 
 	hashcpy(ce->sha1, ondisk->sha1);
 
-	len = ce->ce_flags & CE_NAMEMASK;
-
-	if (ce->ce_flags & CE_EXTENDED) {
-		struct ondisk_cache_entry_extended *ondisk2;
-		int extended_flags;
-		ondisk2 = (struct ondisk_cache_entry_extended *)ondisk;
-		extended_flags = ntohs(ondisk2->flags2) << 16;
-		/* We do not yet understand any bit out of CE_EXTENDED_FLAGS */
-		if (extended_flags & ~CE_EXTENDED_FLAGS)
-			die("Unknown index entry format %08x", extended_flags);
-		ce->ce_flags |= extended_flags;
-		name = ondisk2->name;
-	}
-	else
-		name = ondisk->name;
-
-	if (len == CE_NAMEMASK)
-		len = strlen(name);
-	/*
-	 * NEEDSWORK: If the original index is crafted, this copy could
-	 * go unchecked.
-	 */
-	memcpy(ce->name, name, len + 1);
-}
-
-static inline size_t estimate_cache_size(size_t ondisk_size, unsigned int entries)
-{
-	long per_entry;
-
-	per_entry = sizeof(struct cache_entry) - sizeof(struct ondisk_cache_entry);
-
-	/*
-	 * Alignment can cause differences. This should be "alignof", but
-	 * since that's a gcc'ism, just use the size of a pointer.
-	 */
-	per_entry += sizeof(void *);
-	return ondisk_size + entries*per_entry;
+	memcpy(ce->name, name, len);
+	ce->name[len] = '\0';
+	return ce;
 }
 
 /* remember to discard_cache() before reading a different cache! */
@@ -1267,7 +1275,7 @@ int read_index_from(struct index_state *istate, const char *path)
 {
 	int fd, i;
 	struct stat st;
-	unsigned long src_offset, dst_offset;
+	unsigned long src_offset;
 	struct cache_header *hdr;
 	void *mmap;
 	size_t mmap_size;
@@ -1306,29 +1314,18 @@ int read_index_from(struct index_state *istate, const char *path)
 	istate->cache_nr = ntohl(hdr->hdr_entries);
 	istate->cache_alloc = alloc_nr(istate->cache_nr);
 	istate->cache = xcalloc(istate->cache_alloc, sizeof(struct cache_entry *));
-
-	/*
-	 * The disk format is actually larger than the in-memory format,
-	 * due to space for nsec etc, so even though the in-memory one
-	 * has room for a few  more flags, we can allocate using the same
-	 * index size
-	 */
-	istate->alloc = xmalloc(estimate_cache_size(mmap_size, istate->cache_nr));
 	istate->initialized = 1;
 
 	src_offset = sizeof(*hdr);
-	dst_offset = 0;
 	for (i = 0; i < istate->cache_nr; i++) {
 		struct ondisk_cache_entry *disk_ce;
 		struct cache_entry *ce;
 
 		disk_ce = (struct ondisk_cache_entry *)((char *)mmap + src_offset);
-		ce = (struct cache_entry *)((char *)istate->alloc + dst_offset);
-		convert_from_disk(disk_ce, ce);
+		ce = create_from_disk(disk_ce);
 		set_index_entry(istate, i, ce);
 
 		src_offset += ondisk_ce_size(ce);
-		dst_offset += ce_size(ce);
 	}
 	istate->timestamp.sec = st.st_mtime;
 	istate->timestamp.nsec = ST_MTIME_NSEC(st);
@@ -1362,11 +1359,15 @@ unmap:
 
 int is_index_unborn(struct index_state *istate)
 {
-	return (!istate->cache_nr && !istate->alloc && !istate->timestamp.sec);
+	return (!istate->cache_nr && !istate->timestamp.sec);
 }
 
 int discard_index(struct index_state *istate)
 {
+	int i;
+
+	for (i = 0; i < istate->cache_nr; i++)
+		free(istate->cache[i]);
 	resolve_undo_clear_index(istate);
 	istate->cache_nr = 0;
 	istate->cache_changed = 0;
@@ -1375,8 +1376,6 @@ int discard_index(struct index_state *istate)
 	istate->name_hash_initialized = 0;
 	free_hash(&istate->name_hash);
 	cache_tree_free(&(istate->cache_tree));
-	free(istate->alloc);
-	istate->alloc = NULL;
 	istate->initialized = 0;
 
 	/* no need to throw away allocated active_cache */
@@ -1543,6 +1542,31 @@ static int ce_write_entry(git_SHA_CTX *c, int fd, struct cache_entry *ce)
 	result = ce_write(c, fd, ondisk, size);
 	free(ondisk);
 	return result;
+}
+
+static int has_racy_timestamp(struct index_state *istate)
+{
+	int entries = istate->cache_nr;
+	int i;
+
+	for (i = 0; i < entries; i++) {
+		struct cache_entry *ce = istate->cache[i];
+		if (is_racy_timestamp(istate, ce))
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * Opportunisticly update the index but do not complain if we can't
+ */
+void update_index_if_able(struct index_state *istate, struct lock_file *lockfile)
+{
+	if ((istate->cache_changed || has_racy_timestamp(istate)) &&
+	    !write_index(istate, lockfile->fd))
+		commit_locked_index(lockfile);
+	else
+		rollback_lock_file(lockfile);
 }
 
 int write_index(struct index_state *istate, int newfd)

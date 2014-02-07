@@ -3,6 +3,7 @@
 #include "xdiff-interface.h"
 #include "ll-merge.h"
 #include "blob.h"
+#include "merge-file.h"
 
 static int fill_mmfile_blob(mmfile_t *f, struct blob *obj)
 {
@@ -37,7 +38,7 @@ static void *three_way_filemerge(const char *path, mmfile_t *base, mmfile_t *our
 	 * common ancestor.
 	 */
 	merge_status = ll_merge(&res, path, base, NULL,
-				our, ".our", their, ".their", 0);
+				our, ".our", their, ".their", NULL);
 	if (merge_status < 0)
 		return NULL;
 

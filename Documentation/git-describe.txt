@@ -37,7 +37,7 @@ OPTIONS
 --all::
 	Instead of using only the annotated tags, use any ref
 	found in `.git/refs/`.  This option enables matching
-	any known branch, remote branch, or lightweight tag.
+	any known branch, remote-tracking branch, or lightweight tag.
 
 --tags::
 	Instead of using only the annotated tags, use any tag
@@ -155,17 +155,6 @@ has the fewest commits different from the input committish will be
 selected and output.  Here fewest commits different is defined as
 the number of commits which would be shown by `git log tag..input`
 will be the smallest number of commits possible.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>, but somewhat
-butchered by Junio C Hamano <gitster@pobox.com>.  Later significantly
-updated by Shawn Pearce <spearce@spearce.org>.
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

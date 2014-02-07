@@ -8,13 +8,14 @@
 #### Copyright The Open University UK - 2006.
 ####
 #### Authors: Martyn Smith    <martyn@catalyst.net.nz>
-####          Martin Langhoff <martin@catalyst.net.nz>
+####          Martin Langhoff <martin@laptop.org>
 ####
 ####
 #### Released under the GNU Public License, version 2.
 ####
 ####
 
+use 5.008;
 use strict;
 use warnings;
 use bytes;
@@ -108,14 +109,14 @@ my $usage =
     "    --strict-paths      : Don't allow recursing into subdirectories\n".
     "    --export-all        : Don't check for gitcvs.enabled in config\n".
     "    --version, -V       : Print version information and exit\n".
-    "    --help, -h, -H      : Print usage information and exit\n".
+    "    -h, -H              : Print usage information and exit\n".
     "\n".
     "<directory> ... is a list of allowed directories. If no directories\n".
     "are given, all are allowed. This is an additional restriction, gitcvs\n".
     "access still needs to be enabled by the gitcvs.enabled config option.\n".
     "Alternately, one directory may be specified in GIT_CVSSERVER_ROOT.\n";
 
-my @opts = ( 'help|h|H', 'version|V',
+my @opts = ( 'h|H', 'version|V',
 	     'base-path=s', 'strict-paths', 'export-all' );
 GetOptions( $state, @opts )
     or die $usage;
@@ -2680,7 +2681,7 @@ package GITCVS::log;
 #### Copyright The Open University UK - 2006.
 ####
 #### Authors: Martyn Smith    <martyn@catalyst.net.nz>
-####          Martin Langhoff <martin@catalyst.net.nz>
+####          Martin Langhoff <martin@laptop.org>
 ####
 ####
 
@@ -2847,7 +2848,7 @@ package GITCVS::updater;
 #### Copyright The Open University UK - 2006.
 ####
 #### Authors: Martyn Smith    <martyn@catalyst.net.nz>
-####          Martin Langhoff <martin@catalyst.net.nz>
+####          Martin Langhoff <martin@laptop.org>
 ####
 ####
 

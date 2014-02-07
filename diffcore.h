@@ -45,7 +45,7 @@ struct diff_filespec {
 	unsigned dirty_submodule : 2;  /* For submodules: its work tree is dirty */
 #define DIRTY_SUBMODULE_UNTRACKED 1
 #define DIRTY_SUBMODULE_MODIFIED  2
-
+	unsigned has_more_entries : 1; /* only appear in combined diff */
 	struct userdiff_driver *driver;
 	/* data should be considered "binary"; -1 means "don't know yet" */
 	int is_binary;
@@ -107,7 +107,7 @@ extern void diff_q(struct diff_queue_struct *, struct diff_filepair *);
 extern void diffcore_break(int);
 extern void diffcore_rename(struct diff_options *);
 extern void diffcore_merge_broken(void);
-extern void diffcore_pickaxe(const char *needle, int opts);
+extern void diffcore_pickaxe(struct diff_options *);
 extern void diffcore_order(const char *orderfile);
 
 #define DIFF_DEBUG 0

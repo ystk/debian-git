@@ -23,7 +23,10 @@ test_expect_success setup '
 	 git commit -m "submodule"
 	) &&
 	git clone super super-clone &&
-	(cd super-clone && git submodule update --init)
+	(cd super-clone && git submodule update --init) &&
+	git clone super empty-clone &&
+	(cd empty-clone && git submodule init) &&
+	git clone super top-only-clone
 '
 
 test_expect_success 'change submodule' '
@@ -50,17 +53,36 @@ test_expect_success 'change submodule url' '
 
 test_expect_success '"git submodule sync" should update submodule URLs' '
 	(cd super-clone &&
-	 git pull &&
+	 git pull --no-recurse-submodules &&
 	 git submodule sync
 	) &&
-	test -d "$(git config -f super-clone/submodule/.git/config \
-	                        remote.origin.url)" &&
+	test -d "$(cd super-clone/submodule &&
+	 git config remote.origin.url
+	)" &&
 	(cd super-clone/submodule &&
 	 git checkout master &&
 	 git pull
 	) &&
 	(cd super-clone &&
 	 test -d "$(git config submodule.submodule.url)"
+	)
+'
+
+test_expect_success '"git submodule sync" should update known submodule URLs' '
+	(cd empty-clone &&
+	 git pull &&
+	 git submodule sync &&
+	 test -d "$(git config submodule.submodule.url)"
+	)
+'
+
+test_expect_success '"git submodule sync" should not vivify uninteresting submodule' '
+	(cd top-only-clone &&
+	 git pull &&
+	 git submodule sync &&
+	 test -z "$(git config submodule.submodule.url)" &&
+	 git submodule sync submodule &&
+	 test -z "$(git config submodule.submodule.url)"
 	)
 '
 

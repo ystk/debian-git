@@ -23,6 +23,12 @@ test_expect_success 'setup 1' '
 	git branch df-3 &&
 	git branch remove &&
 	git branch submod &&
+	git branch copy &&
+	git branch rename &&
+	if test_have_prereq SYMLINKS
+	then
+		git branch rename-ln
+	fi &&
 
 	echo hello >>a &&
 	cp a d/e &&
@@ -248,22 +254,38 @@ test_expect_success 'setup 7' '
 	git commit -m "make d/ a submodule"
 '
 
+test_expect_success 'setup 8' '
+	git checkout rename &&
+	git mv a e &&
+	git add e &&
+	test_tick &&
+	git commit -m "rename a->e" &&
+	if test_have_prereq SYMLINKS
+	then
+		git checkout rename-ln &&
+		git mv a e &&
+		ln -s e a &&
+		git add a e &&
+		test_tick &&
+		git commit -m "rename a->e, symlink a->e" &&
+		oln=`printf e | git hash-object --stdin`
+	fi
+'
+
+test_expect_success 'setup 9' '
+	git checkout copy &&
+	cp a e &&
+	git add e &&
+	test_tick &&
+	git commit -m "copy a->e"
+'
+
 test_expect_success 'merge-recursive simple' '
 
 	rm -fr [abcd] &&
 	git checkout -f "$c2" &&
 
-	git merge-recursive "$c0" -- "$c2" "$c1"
-	status=$?
-	case "$status" in
-	1)
-		: happy
-		;;
-	*)
-		echo >&2 "why status $status!!!"
-		false
-		;;
-	esac
+	test_expect_code 1 git merge-recursive "$c0" -- "$c2" "$c1"
 '
 
 test_expect_success 'merge-recursive result' '
@@ -288,13 +310,13 @@ test_expect_success 'fail if the index has unresolved entries' '
 
 	test_must_fail git merge "$c5" &&
 	test_must_fail git merge "$c5" 2> out &&
-	grep "not possible because you have unmerged files" out &&
+	test_i18ngrep "not possible because you have unmerged files" out &&
 	git add -u &&
 	test_must_fail git merge "$c5" 2> out &&
-	grep "You have not concluded your merge" out &&
+	test_i18ngrep "You have not concluded your merge" out &&
 	rm -f .git/MERGE_HEAD &&
 	test_must_fail git merge "$c5" 2> out &&
-	grep "Your local changes to .* would be overwritten by merge." out
+	test_i18ngrep "Your local changes to the following files would be overwritten by merge:" out
 '
 
 test_expect_success 'merge-recursive remove conflict' '
@@ -302,17 +324,7 @@ test_expect_success 'merge-recursive remove conflict' '
 	rm -fr [abcd] &&
 	git checkout -f "$c1" &&
 
-	git merge-recursive "$c0" -- "$c1" "$c5"
-	status=$?
-	case "$status" in
-	1)
-		: happy
-		;;
-	*)
-		echo >&2 "why status $status!!!"
-		false
-		;;
-	esac
+	test_expect_code 1 git merge-recursive "$c0" -- "$c1" "$c5"
 '
 
 test_expect_success 'merge-recursive remove conflict' '
@@ -356,17 +368,7 @@ test_expect_success 'merge-recursive d/f conflict' '
 	git reset --hard &&
 	git checkout -f "$c1" &&
 
-	git merge-recursive "$c0" -- "$c1" "$c4"
-	status=$?
-	case "$status" in
-	1)
-		: happy
-		;;
-	*)
-		echo >&2 "why status $status!!!"
-		false
-		;;
-	esac
+	test_expect_code 1 git merge-recursive "$c0" -- "$c1" "$c4"
 '
 
 test_expect_success 'merge-recursive d/f conflict result' '
@@ -390,17 +392,7 @@ test_expect_success 'merge-recursive d/f conflict the other way' '
 	git reset --hard &&
 	git checkout -f "$c4" &&
 
-	git merge-recursive "$c0" -- "$c4" "$c1"
-	status=$?
-	case "$status" in
-	1)
-		: happy
-		;;
-	*)
-		echo >&2 "why status $status!!!"
-		false
-		;;
-	esac
+	test_expect_code 1 git merge-recursive "$c0" -- "$c4" "$c1"
 '
 
 test_expect_success 'merge-recursive d/f conflict result the other way' '
@@ -424,17 +416,7 @@ test_expect_success 'merge-recursive d/f conflict' '
 	git reset --hard &&
 	git checkout -f "$c1" &&
 
-	git merge-recursive "$c0" -- "$c1" "$c6"
-	status=$?
-	case "$status" in
-	1)
-		: happy
-		;;
-	*)
-		echo >&2 "why status $status!!!"
-		false
-		;;
-	esac
+	test_expect_code 1 git merge-recursive "$c0" -- "$c1" "$c6"
 '
 
 test_expect_success 'merge-recursive d/f conflict result' '
@@ -458,17 +440,7 @@ test_expect_success 'merge-recursive d/f conflict' '
 	git reset --hard &&
 	git checkout -f "$c6" &&
 
-	git merge-recursive "$c0" -- "$c6" "$c1"
-	status=$?
-	case "$status" in
-	1)
-		: happy
-		;;
-	*)
-		echo >&2 "why status $status!!!"
-		false
-		;;
-	esac
+	test_expect_code 1 git merge-recursive "$c0" -- "$c6" "$c1"
 '
 
 test_expect_success 'merge-recursive d/f conflict result' '
@@ -526,7 +498,7 @@ test_expect_success 'reset and bind merge' '
 		echo "100644 $o0 0	c"
 		echo "100644 $o1 0	d/e"
 	) >expected &&
-	test_cmp expected actual
+	test_cmp expected actual &&
 
 	git read-tree --prefix=z/ master &&
 	git ls-files -s >actual &&
@@ -579,5 +551,46 @@ test_expect_failure 'merge-recursive simple w/submodule result' '
 	) >expected &&
 	test_cmp expected actual
 '
+
+test_expect_success 'merge-recursive copy vs. rename' '
+	git checkout -f copy &&
+	git merge rename &&
+	( git ls-tree -r HEAD && git ls-files -s ) >actual &&
+	(
+		echo "100644 blob $o0	b"
+		echo "100644 blob $o0	c"
+		echo "100644 blob $o0	d/e"
+		echo "100644 blob $o0	e"
+		echo "100644 $o0 0	b"
+		echo "100644 $o0 0	c"
+		echo "100644 $o0 0	d/e"
+		echo "100644 $o0 0	e"
+	) >expected &&
+	test_cmp expected actual
+'
+
+if test_have_prereq SYMLINKS
+then
+	test_expect_failure 'merge-recursive rename vs. rename/symlink' '
+
+		git checkout -f rename &&
+		git merge rename-ln &&
+		( git ls-tree -r HEAD ; git ls-files -s ) >actual &&
+		(
+			echo "120000 blob $oln	a"
+			echo "100644 blob $o0	b"
+			echo "100644 blob $o0	c"
+			echo "100644 blob $o0	d/e"
+			echo "100644 blob $o0	e"
+			echo "120000 $oln 0	a"
+			echo "100644 $o0 0	b"
+			echo "100644 $o0 0	c"
+			echo "100644 $o0 0	d/e"
+			echo "100644 $o0 0	e"
+		) >expected &&
+		test_cmp expected actual
+	'
+fi
+
 
 test_done

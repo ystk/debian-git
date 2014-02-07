@@ -8,6 +8,7 @@ git-upload-archive - Send archive back to git-archive
 
 SYNOPSIS
 --------
+[verse]
 'git upload-archive' <directory>
 
 DESCRIPTION
@@ -23,14 +24,6 @@ OPTIONS
 -------
 <directory>::
 	The repository to get a tar archive from.
-
-Author
-------
-Written by Franck Bui-Huu.
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

@@ -1,4 +1,4 @@
-#include "cache.h"
+#include "builtin.h"
 #include "refs.h"
 #include "pkt-line.h"
 #include "commit.h"
@@ -9,17 +9,23 @@
 #include "fetch-pack.h"
 #include "remote.h"
 #include "run-command.h"
+#include "transport.h"
 
 static int transfer_unpack_limit = -1;
 static int fetch_unpack_limit = -1;
 static int unpack_limit = 100;
 static int prefer_ofs_delta = 1;
+static int no_done;
+static int fetch_fsck_objects = -1;
+static int transfer_fsck_objects = -1;
 static struct fetch_pack_args args = {
 	/* .uploadpack = */ "git-upload-pack",
 };
 
 static const char fetch_pack_usage[] =
-"git fetch-pack [--all] [--quiet|-q] [--keep|-k] [--thin] [--include-tag] [--upload-pack=<git-upload-pack>] [--depth=<n>] [--no-progress] [-v] [<host>:]<directory> [<refs>...]";
+"git fetch-pack [--all] [--stdin] [--quiet|-q] [--keep|-k] [--thin] "
+"[--include-tag] [--upload-pack=<git-upload-pack>] [--depth=<n>] "
+"[--no-progress] [-v] [<host>:]<directory> [<refs>...]";
 
 #define COMPLETE	(1U << 0)
 #define COMMON		(1U << 1)
@@ -47,16 +53,16 @@ static void rev_list_push(struct commit *commit, int mark)
 			if (parse_commit(commit))
 				return;
 
-		insert_by_date(commit, &rev_list);
+		commit_list_insert_by_date(commit, &rev_list);
 
 		if (!(commit->object.flags & COMMON))
 			non_common_revs++;
 	}
 }
 
-static int rev_list_insert_ref(const char *path, const unsigned char *sha1, int flag, void *cb_data)
+static int rev_list_insert_ref(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
 {
-	struct object *o = deref_tag(parse_object(sha1), path, 0);
+	struct object *o = deref_tag(parse_object(sha1), refname, 0);
 
 	if (o && o->type == OBJ_COMMIT)
 		rev_list_push((struct commit *)o, SEEN);
@@ -64,9 +70,9 @@ static int rev_list_insert_ref(const char *path, const unsigned char *sha1, int 
 	return 0;
 }
 
-static int clear_marks(const char *path, const unsigned char *sha1, int flag, void *cb_data)
+static int clear_marks(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
 {
-	struct object *o = deref_tag(parse_object(sha1), path, 0);
+	struct object *o = deref_tag(parse_object(sha1), refname, 0);
 
 	if (o && o->type == OBJ_COMMIT)
 		clear_commit_marks((struct commit *)o,
@@ -183,6 +189,36 @@ static void consume_shallow_list(int fd)
 	}
 }
 
+struct write_shallow_data {
+	struct strbuf *out;
+	int use_pack_protocol;
+	int count;
+};
+
+static int write_one_shallow(const struct commit_graft *graft, void *cb_data)
+{
+	struct write_shallow_data *data = cb_data;
+	const char *hex = sha1_to_hex(graft->sha1);
+	data->count++;
+	if (data->use_pack_protocol)
+		packet_buf_write(data->out, "shallow %s", hex);
+	else {
+		strbuf_addstr(data->out, hex);
+		strbuf_addch(data->out, '\n');
+	}
+	return 0;
+}
+
+static int write_shallow_commits(struct strbuf *out, int use_pack_protocol)
+{
+	struct write_shallow_data data;
+	data.out = out;
+	data.use_pack_protocol = use_pack_protocol;
+	data.count = 0;
+	for_each_commit_graft(write_one_shallow, &data);
+	return data.count;
+}
+
 static enum ack_type get_ack(int fd, unsigned char *result_sha1)
 {
 	static char line[1000];
@@ -217,14 +253,35 @@ static void send_request(int fd, struct strbuf *buf)
 		safe_write(fd, buf->buf, buf->len);
 }
 
+static void insert_one_alternate_ref(const struct ref *ref, void *unused)
+{
+	rev_list_insert_ref(NULL, ref->old_sha1, 0, NULL);
+}
+
+#define INITIAL_FLUSH 16
+#define PIPESAFE_FLUSH 32
+#define LARGE_FLUSH 1024
+
+static int next_flush(int count)
+{
+	int flush_limit = args.stateless_rpc ? LARGE_FLUSH : PIPESAFE_FLUSH;
+
+	if (count < flush_limit)
+		count <<= 1;
+	else
+		count += flush_limit;
+	return count;
+}
+
 static int find_common(int fd[2], unsigned char *result_sha1,
 		       struct ref *refs)
 {
 	int fetching;
-	int count = 0, flushes = 0, retval;
+	int count = 0, flushes = 0, flush_at = INITIAL_FLUSH, retval;
 	const unsigned char *sha1;
 	unsigned in_vain = 0;
 	int got_continue = 0;
+	int got_ready = 0;
 	struct strbuf req_buf = STRBUF_INIT;
 	size_t state_len = 0;
 
@@ -235,6 +292,7 @@ static int find_common(int fd[2], unsigned char *result_sha1,
 	marked = 1;
 
 	for_each_ref(rev_list_insert_ref, NULL);
+	for_each_alternate_ref(insert_one_alternate_ref, NULL);
 
 	fetching = 0;
 	for ( ; refs ; refs = refs->next) {
@@ -262,6 +320,7 @@ static int find_common(int fd[2], unsigned char *result_sha1,
 			struct strbuf c = STRBUF_INIT;
 			if (multi_ack == 2)     strbuf_addstr(&c, " multi_ack_detailed");
 			if (multi_ack == 1)     strbuf_addstr(&c, " multi_ack");
+			if (no_done)            strbuf_addstr(&c, " no-done");
 			if (use_sideband == 2)  strbuf_addstr(&c, " side-band-64k");
 			if (use_sideband == 1)  strbuf_addstr(&c, " side-band");
 			if (args.use_thin_pack) strbuf_addstr(&c, " thin-pack");
@@ -332,19 +391,20 @@ static int find_common(int fd[2], unsigned char *result_sha1,
 		if (args.verbose)
 			fprintf(stderr, "have %s\n", sha1_to_hex(sha1));
 		in_vain++;
-		if (!(31 & ++count)) {
+		if (flush_at <= ++count) {
 			int ack;
 
 			packet_buf_flush(&req_buf);
 			send_request(fd[1], &req_buf);
 			strbuf_setlen(&req_buf, state_len);
 			flushes++;
+			flush_at = next_flush(count);
 
 			/*
 			 * We keep one window "ahead" of the other side, and
 			 * will wait for an ACK only on the next one
 			 */
-			if (!args.stateless_rpc && count == 32)
+			if (!args.stateless_rpc && count == INITIAL_FLUSH)
 				continue;
 
 			consume_shallow_list(fd[0]);
@@ -364,6 +424,8 @@ static int find_common(int fd[2], unsigned char *result_sha1,
 				case ACK_continue: {
 					struct commit *commit =
 						lookup_commit(result_sha1);
+					if (!commit)
+						die("invalid commit %s", sha1_to_hex(result_sha1));
 					if (args.stateless_rpc
 					 && ack == ACK_common
 					 && !(commit->object.flags & COMMON)) {
@@ -379,6 +441,10 @@ static int find_common(int fd[2], unsigned char *result_sha1,
 					retval = 0;
 					in_vain = 0;
 					got_continue = 1;
+					if (ack == ACK_ready) {
+						rev_list = NULL;
+						got_ready = 1;
+					}
 					break;
 					}
 				}
@@ -392,8 +458,10 @@ static int find_common(int fd[2], unsigned char *result_sha1,
 		}
 	}
 done:
-	packet_buf_write(&req_buf, "done\n");
-	send_request(fd[1], &req_buf);
+	if (!got_ready || !no_done) {
+		packet_buf_write(&req_buf, "done\n");
+		send_request(fd[1], &req_buf);
+	}
 	if (args.verbose)
 		fprintf(stderr, "done\n");
 	if (retval != 0) {
@@ -422,7 +490,7 @@ done:
 
 static struct commit_list *complete;
 
-static int mark_complete(const char *path, const unsigned char *sha1, int flag, void *cb_data)
+static int mark_complete(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
 {
 	struct object *o = parse_object(sha1);
 
@@ -435,8 +503,10 @@ static int mark_complete(const char *path, const unsigned char *sha1, int flag, 
 	}
 	if (o && o->type == OBJ_COMMIT) {
 		struct commit *commit = (struct commit *)o;
-		commit->object.flags |= COMPLETE;
-		insert_by_date(commit, &complete);
+		if (!(commit->object.flags & COMPLETE)) {
+			commit->object.flags |= COMPLETE;
+			commit_list_insert_by_date(commit, &complete);
+		}
 	}
 	return 0;
 }
@@ -473,7 +543,7 @@ static void filter_refs(struct ref **refs, int nr_match, char **match)
 	for (ref = *refs; ref; ref = next) {
 		next = ref->next;
 		if (!memcmp(ref->name, "refs/", 5) &&
-		    check_ref_format(ref->name + 5))
+		    check_refname_format(ref->name + 5, 0))
 			; /* trash */
 		else if (args.fetch_all &&
 			 (!args.depth || prefixcmp(ref->name, "refs/tags/") )) {
@@ -483,11 +553,16 @@ static void filter_refs(struct ref **refs, int nr_match, char **match)
 			continue;
 		}
 		else {
-			int order = path_match(ref->name, nr_match, match);
-			if (order) {
-				return_refs[order-1] = ref;
-				continue; /* we will link it later */
+			int i;
+			for (i = 0; i < nr_match; i++) {
+				if (!strcmp(ref->name, match[i])) {
+					match[i][0] = '\0';
+					return_refs[i] = ref;
+					break;
+				}
 			}
+			if (i < nr_match)
+				continue; /* we will link it later */
 		}
 		free(ref);
 	}
@@ -506,6 +581,11 @@ static void filter_refs(struct ref **refs, int nr_match, char **match)
 			free(return_refs);
 	}
 	*refs = newlist;
+}
+
+static void mark_alternate_complete(const struct ref *ref, void *unused)
+{
+	mark_complete(NULL, ref->old_sha1, 0, NULL);
 }
 
 static int everything_local(struct ref **refs, int nr_match, char **match)
@@ -536,6 +616,7 @@ static int everything_local(struct ref **refs, int nr_match, char **match)
 
 	if (!args.depth) {
 		for_each_ref(mark_complete, NULL);
+		for_each_alternate_ref(mark_alternate_complete, NULL);
 		if (cutoff)
 			mark_recent_complete_commits(cutoff);
 	}
@@ -658,11 +739,17 @@ static int get_pack(int xd[2], char **pack_lockfile)
 	}
 	else {
 		*av++ = "unpack-objects";
-		if (args.quiet)
+		if (args.quiet || args.no_progress)
 			*av++ = "-q";
 	}
 	if (*hdr_arg)
 		*av++ = hdr_arg;
+	if (fetch_fsck_objects >= 0
+	    ? fetch_fsck_objects
+	    : transfer_fsck_objects >= 0
+	    ? transfer_fsck_objects
+	    : 0)
+		*av++ = "--strict";
 	*av++ = NULL;
 
 	cmd.in = demux.out;
@@ -696,6 +783,12 @@ static struct ref *do_fetch_pack(int fd[2],
 		if (args.verbose)
 			fprintf(stderr, "Server supports multi_ack_detailed\n");
 		multi_ack = 2;
+		if (server_supports("no-done")) {
+			if (args.verbose)
+				fprintf(stderr, "Server supports no-done\n");
+			if (args.stateless_rpc)
+				no_done = 1;
+		}
 	}
 	else if (server_supports("multi_ack")) {
 		if (args.verbose)
@@ -776,6 +869,16 @@ static int fetch_pack_config(const char *var, const char *value, void *cb)
 		return 0;
 	}
 
+	if (!strcmp(var, "fetch.fsckobjects")) {
+		fetch_fsck_objects = git_config_bool(var, value);
+		return 0;
+	}
+
+	if (!strcmp(var, "transfer.fsckobjects")) {
+		transfer_fsck_objects = git_config_bool(var, value);
+		return 0;
+	}
+
 	return git_default_config(var, value, cb);
 }
 
@@ -803,6 +906,8 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	char *pack_lockfile = NULL;
 	char **pack_lockfile_ptr = NULL;
 	struct child_process *conn;
+
+	packet_trace_identity("fetch-pack");
 
 	nr_heads = 0;
 	heads = NULL;
@@ -839,6 +944,10 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 				args.fetch_all = 1;
 				continue;
 			}
+			if (!strcmp("--stdin", arg)) {
+				args.stdin_refs = 1;
+				continue;
+			}
 			if (!strcmp("-v", arg)) {
 				args.verbose = 1;
 				continue;
@@ -870,6 +979,40 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 	if (!dest)
 		usage(fetch_pack_usage);
 
+	if (args.stdin_refs) {
+		/*
+		 * Copy refs from cmdline to new growable list, then
+		 * append the refs from the standard input.
+		 */
+		int alloc_heads = nr_heads;
+		int size = nr_heads * sizeof(*heads);
+		heads = memcpy(xmalloc(size), heads, size);
+		if (args.stateless_rpc) {
+			/* in stateless RPC mode we use pkt-line to read
+			 * from stdin, until we get a flush packet
+			 */
+			static char line[1000];
+			for (;;) {
+				int n = packet_read_line(0, line, sizeof(line));
+				if (!n)
+					break;
+				if (line[n-1] == '\n')
+					n--;
+				ALLOC_GROW(heads, nr_heads + 1, alloc_heads);
+				heads[nr_heads++] = xmemdupz(line, n);
+			}
+		}
+		else {
+			/* read from stdin one ref per line, until EOF */
+			struct strbuf line = STRBUF_INIT;
+			while (strbuf_getline(&line, stdin, '\n') != EOF) {
+				ALLOC_GROW(heads, nr_heads + 1, alloc_heads);
+				heads[nr_heads++] = strbuf_detach(&line, NULL);
+			}
+			strbuf_release(&line);
+		}
+	}
+
 	if (args.stateless_rpc) {
 		conn = NULL;
 		fd[0] = 0;
@@ -879,7 +1022,7 @@ int cmd_fetch_pack(int argc, const char **argv, const char *prefix)
 				   args.verbose ? CONNECT_VERBOSE : 0);
 	}
 
-	get_remote_heads(fd[0], &ref, 0, NULL, 0, NULL);
+	get_remote_heads(fd[0], &ref, 0, NULL);
 
 	ref = fetch_pack(&args, fd, conn, ref, dest,
 		nr_heads, heads, pack_lockfile_ptr);

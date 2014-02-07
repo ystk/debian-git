@@ -4,12 +4,12 @@
 #include <direct.h>
 #include <process.h>
 #include <malloc.h>
+#include <io.h>
 
 /* porting function */
 #define inline __inline
 #define __inline__ __inline
 #define __attribute__(x)
-#define va_copy(dst, src)     ((dst) = (src))
 #define strncasecmp  _strnicmp
 #define ftruncate    _chsize
 

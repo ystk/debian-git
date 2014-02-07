@@ -179,7 +179,22 @@ test_expect_success 'git add --refresh' '
 	test -z "`git diff-index HEAD -- foo`"
 '
 
-test_expect_success POSIXPERM 'git add should fail atomically upon an unreadable file' '
+test_expect_success 'git add --refresh with pathspec' '
+	git reset --hard &&
+	echo >foo && echo >bar && echo >baz &&
+	git add foo bar baz && H=$(git rev-parse :foo) && git rm -f foo &&
+	echo "100644 $H 3	foo" | git update-index --index-info &&
+	test-chmtime -60 bar baz &&
+	>expect &&
+	git add --refresh bar >actual &&
+	test_cmp expect actual &&
+
+	git diff-files --name-only >actual &&
+	! grep bar actual&&
+	grep baz actual
+'
+
+test_expect_success POSIXPERM,SANITY 'git add should fail atomically upon an unreadable file' '
 	git reset --hard &&
 	date >foo1 &&
 	date >foo2 &&
@@ -190,7 +205,7 @@ test_expect_success POSIXPERM 'git add should fail atomically upon an unreadable
 
 rm -f foo2
 
-test_expect_success POSIXPERM 'git add --ignore-errors' '
+test_expect_success POSIXPERM,SANITY 'git add --ignore-errors' '
 	git reset --hard &&
 	date >foo1 &&
 	date >foo2 &&
@@ -201,7 +216,7 @@ test_expect_success POSIXPERM 'git add --ignore-errors' '
 
 rm -f foo2
 
-test_expect_success POSIXPERM 'git add (add.ignore-errors)' '
+test_expect_success POSIXPERM,SANITY 'git add (add.ignore-errors)' '
 	git config add.ignore-errors 1 &&
 	git reset --hard &&
 	date >foo1 &&
@@ -212,7 +227,7 @@ test_expect_success POSIXPERM 'git add (add.ignore-errors)' '
 '
 rm -f foo2
 
-test_expect_success POSIXPERM 'git add (add.ignore-errors = false)' '
+test_expect_success POSIXPERM,SANITY 'git add (add.ignore-errors = false)' '
 	git config add.ignore-errors 0 &&
 	git reset --hard &&
 	date >foo1 &&
@@ -223,7 +238,7 @@ test_expect_success POSIXPERM 'git add (add.ignore-errors = false)' '
 '
 rm -f foo2
 
-test_expect_success POSIXPERM '--no-ignore-errors overrides config' '
+test_expect_success POSIXPERM,SANITY '--no-ignore-errors overrides config' '
        git config add.ignore-errors 1 &&
        git reset --hard &&
        date >foo1 &&
@@ -268,8 +283,12 @@ test_expect_success 'git add --dry-run of existing changed file' "
 
 test_expect_success 'git add --dry-run of non-existing file' "
 	echo ignored-file >>.gitignore &&
-	test_must_fail git add --dry-run track-this ignored-file >actual 2>&1 &&
-	echo \"fatal: pathspec 'ignored-file' did not match any files\" | test_cmp - actual
+	test_must_fail git add --dry-run track-this ignored-file >actual 2>&1
+"
+
+test_expect_success 'git add --dry-run of an existing file output' "
+	echo \"fatal: pathspec 'ignored-file' did not match any files\" >expect &&
+	test_i18ncmp expect actual
 "
 
 cat >expect.err <<\EOF
@@ -283,9 +302,12 @@ add 'track-this'
 EOF
 
 test_expect_success 'git add --dry-run --ignore-missing of non-existing file' '
-	test_must_fail git add --dry-run --ignore-missing track-this ignored-file >actual.out 2>actual.err &&
-	test_cmp expect.out actual.out &&
-	test_cmp expect.err actual.err
+	test_must_fail git add --dry-run --ignore-missing track-this ignored-file >actual.out 2>actual.err
+'
+
+test_expect_success 'git add --dry-run --ignore-missing of non-existing file output' '
+	test_i18ncmp expect.out actual.out &&
+	test_i18ncmp expect.err actual.err
 '
 
 test_done

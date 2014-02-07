@@ -34,6 +34,12 @@ test_expect_success 'no encoding header for base case' '
 	test z = "z$E"
 '
 
+test_expect_failure 'UTF-16 refused because of NULs' '
+	echo UTF-16 >F &&
+	git commit -a -F "$TEST_DIRECTORY"/t3900/UTF-16.txt
+'
+
+
 for H in ISO8859-1 eucJP ISO-2022-JP
 do
 	test_expect_success "$H setup" '
@@ -132,5 +138,34 @@ do
 		compare_with "--encoding=none '$H'" "$TEST_DIRECTORY"/t3900/'$H'.txt
 	'
 done
+
+test_commit_autosquash_flags () {
+	H=$1
+	flag=$2
+	test_expect_success "commit --$flag with $H encoding" '
+		git config i18n.commitencoding $H &&
+		git checkout -b $H-$flag C0 &&
+		echo $H >>F &&
+		git commit -a -F "$TEST_DIRECTORY"/t3900/$H.txt &&
+		test_tick &&
+		echo intermediate stuff >>G &&
+		git add G &&
+		git commit -a -m "intermediate commit" &&
+		test_tick &&
+		echo $H $flag >>F &&
+		git commit -a --$flag HEAD~1 &&
+		E=$(git cat-file commit '$H-$flag' |
+			sed -ne "s/^encoding //p") &&
+		test "z$E" = "z$H" &&
+		git config --unset-all i18n.commitencoding &&
+		git rebase --autosquash -i HEAD^^^ &&
+		git log --oneline >actual &&
+		test_line_count = 3 actual
+	'
+}
+
+test_commit_autosquash_flags eucJP fixup
+
+test_commit_autosquash_flags ISO-2022-JP squash
 
 test_done

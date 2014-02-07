@@ -16,6 +16,7 @@
 #include "resolve-undo.h"
 
 static int nr_trees;
+static int read_empty;
 static struct tree *trees[MAX_UNPACK_TREES];
 
 static int list_tree(unsigned char *sha1)
@@ -32,7 +33,7 @@ static int list_tree(unsigned char *sha1)
 }
 
 static const char * const read_tree_usage[] = {
-	"git read-tree [[-m [--trivial] [--aggressive] | --reset | --prefix=<prefix>] [-u [--exclude-per-directory=<gitignore>] | -i]] [--no-sparse-checkout] [--index-output=<file>] <tree-ish1> [<tree-ish2> [<tree-ish3>]]",
+	"git read-tree [[-m [--trivial] [--aggressive] | --reset | --prefix=<prefix>] [-u [--exclude-per-directory=<gitignore>] | -i]] [--no-sparse-checkout] [--index-output=<file>] (--empty | <tree-ish1> [<tree-ish2> [<tree-ish3>]])",
 	NULL
 };
 
@@ -103,10 +104,12 @@ int cmd_read_tree(int argc, const char **argv, const char *unused_prefix)
 	struct unpack_trees_options opts;
 	int prefix_set = 0;
 	const struct option read_tree_options[] = {
-		{ OPTION_CALLBACK, 0, "index-output", NULL, "FILE",
-		  "write resulting index to <FILE>",
+		{ OPTION_CALLBACK, 0, "index-output", NULL, "file",
+		  "write resulting index to <file>",
 		  PARSE_OPT_NONEG, index_output_cb },
-		OPT__VERBOSE(&opts.verbose_update),
+		OPT_SET_INT(0, "empty", &read_empty,
+			    "only empty the index", 1),
+		OPT__VERBOSE(&opts.verbose_update, "be verbose"),
 		OPT_GROUP("Merging"),
 		OPT_SET_INT('m', NULL, &opts.merge,
 			    "perform a merge in addition to a read", 1),
@@ -127,6 +130,7 @@ int cmd_read_tree(int argc, const char **argv, const char *unused_prefix)
 		  PARSE_OPT_NONEG, exclude_per_directory_cb },
 		OPT_SET_INT('i', NULL, &opts.index_only,
 			    "don't check the working tree after merging", 1),
+		OPT__DRY_RUN(&opts.dry_run, "don't update the index or the work tree"),
 		OPT_SET_INT(0, "no-sparse-checkout", &opts.skip_sparse_checkout,
 			    "skip applying sparse checkout filter", 1),
 		OPT_SET_INT(0, "debug-unpack", &opts.debug_unpack,
@@ -166,6 +170,11 @@ int cmd_read_tree(int argc, const char **argv, const char *unused_prefix)
 			die("failed to unpack tree object %s", arg);
 		stage++;
 	}
+	if (nr_trees == 0 && !read_empty)
+		warning("read-tree: emptying the index with no arguments is deprecated; use --empty");
+	else if (nr_trees > 0 && read_empty)
+		die("passing trees as arguments contradicts --empty");
+
 	if (1 < opts.index_only + opts.update)
 		die("-u and -i at the same time makes no sense");
 	if ((opts.update||opts.index_only) && !opts.merge)
@@ -211,7 +220,7 @@ int cmd_read_tree(int argc, const char **argv, const char *unused_prefix)
 	if (unpack_trees(nr_trees, t, &opts))
 		return 128;
 
-	if (opts.debug_unpack)
+	if (opts.debug_unpack || opts.dry_run)
 		return 0; /* do not write the index out */
 
 	/*

@@ -3,28 +3,7 @@
 #include "exec_cmd.h"
 #include "levenshtein.h"
 #include "help.h"
-
-/* most GUI terminals set COLUMNS (although some don't export it) */
-static int term_columns(void)
-{
-	char *col_string = getenv("COLUMNS");
-	int n_cols;
-
-	if (col_string && (n_cols = atoi(col_string)) > 0)
-		return n_cols;
-
-#ifdef TIOCGWINSZ
-	{
-		struct winsize ws;
-		if (!ioctl(1, TIOCGWINSZ, &ws)) {
-			if (ws.ws_col)
-				return ws.ws_col;
-		}
-	}
-#endif
-
-	return 80;
-}
+#include "common-cmds.h"
 
 void add_cmdname(struct cmdnames *cmds, const char *name, int len)
 {
@@ -126,7 +105,10 @@ static int is_executable(const char *name)
 	    !S_ISREG(st.st_mode))
 		return 0;
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__CYGWIN__)
+#if defined(__CYGWIN__)
+if ((st.st_mode & S_IXUSR) == 0)
+#endif
 {	/* cannot trust the executable bit, peek into the file instead */
 	char buf[3] = { 0 };
 	int n;
@@ -298,7 +280,12 @@ static void add_cmd_list(struct cmdnames *cmds, struct cmdnames *old)
 }
 
 /* An empirically derived magic number */
-#define SIMILAR_ENOUGH(x) ((x) < 6)
+#define SIMILARITY_FLOOR 7
+#define SIMILAR_ENOUGH(x) ((x) < SIMILARITY_FLOOR)
+
+static const char bad_interpreter_advice[] =
+	N_("'%s' appears to be a git command, but we were not\n"
+	"able to execute it. Maybe git-%s is broken?");
 
 const char *help_unknown_cmd(const char *cmd)
 {
@@ -319,10 +306,36 @@ const char *help_unknown_cmd(const char *cmd)
 	      sizeof(main_cmds.names), cmdname_compare);
 	uniq(&main_cmds);
 
-	/* This reuses cmdname->len for similarity index */
-	for (i = 0; i < main_cmds.cnt; ++i)
+	/* This abuses cmdname->len for levenshtein distance */
+	for (i = 0, n = 0; i < main_cmds.cnt; i++) {
+		int cmp = 0; /* avoid compiler stupidity */
+		const char *candidate = main_cmds.names[i]->name;
+
+		/*
+		 * An exact match means we have the command, but
+		 * for some reason exec'ing it gave us ENOENT; probably
+		 * it's a bad interpreter in the #! line.
+		 */
+		if (!strcmp(candidate, cmd))
+			die(_(bad_interpreter_advice), cmd, cmd);
+
+		/* Does the candidate appear in common_cmds list? */
+		while (n < ARRAY_SIZE(common_cmds) &&
+		       (cmp = strcmp(common_cmds[n].name, candidate)) < 0)
+			n++;
+		if ((n < ARRAY_SIZE(common_cmds)) && !cmp) {
+			/* Yes, this is one of the common commands */
+			n++; /* use the entry from common_cmds[] */
+			if (!prefixcmp(candidate, cmd)) {
+				/* Give prefix match a very good score */
+				main_cmds.names[i]->len = 0;
+				continue;
+			}
+		}
+
 		main_cmds.names[i]->len =
-			levenshtein(cmd, main_cmds.names[i]->name, 0, 2, 1, 4);
+			levenshtein(cmd, candidate, 0, 2, 1, 4) + 1;
+	}
 
 	qsort(main_cmds.names, main_cmds.cnt,
 	      sizeof(*main_cmds.names), levenshtein_compare);
@@ -330,10 +343,21 @@ const char *help_unknown_cmd(const char *cmd)
 	if (!main_cmds.cnt)
 		die ("Uh oh. Your system reports no Git commands at all.");
 
-	best_similarity = main_cmds.names[0]->len;
-	n = 1;
-	while (n < main_cmds.cnt && best_similarity == main_cmds.names[n]->len)
-		++n;
+	/* skip and count prefix matches */
+	for (n = 0; n < main_cmds.cnt && !main_cmds.names[n]->len; n++)
+		; /* still counting */
+
+	if (main_cmds.cnt <= n) {
+		/* prefix matches with everything? that is too ambiguous */
+		best_similarity = SIMILARITY_FLOOR + 1;
+	} else {
+		/* count all the most similar ones */
+		for (best_similarity = main_cmds.names[n++]->len;
+		     (n < main_cmds.cnt &&
+		      best_similarity == main_cmds.names[n]->len);
+		     n++)
+			; /* still counting */
+	}
 	if (autocorrect && n == 1 && SIMILAR_ENOUGH(best_similarity)) {
 		const char *assumed = main_cmds.names[0]->name;
 		main_cmds.names[0] = NULL;

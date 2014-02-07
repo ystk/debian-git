@@ -153,6 +153,7 @@ struct string_list_item *string_list_append(struct string_list *list, const char
 	ALLOC_GROW(list->items, list->nr + 1, list->alloc);
 	list->items[list->nr].string =
 		list->strdup_strings ? xstrdup(string) : (char *)string;
+	list->items[list->nr].util = NULL;
 	return list->items + list->nr++;
 }
 
@@ -184,3 +185,12 @@ int unsorted_string_list_has_string(struct string_list *list,
 	return unsorted_string_list_lookup(list, string) != NULL;
 }
 
+void unsorted_string_list_delete_item(struct string_list *list, int i, int free_util)
+{
+	if (list->strdup_strings)
+		free(list->items[i].string);
+	if (free_util)
+		free(list->items[i].util);
+	list->items[i] = list->items[list->nr-1];
+	list->nr--;
+}

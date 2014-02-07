@@ -7,6 +7,7 @@ git-pack-refs - Pack heads and tags for efficient repository access
 
 SYNOPSIS
 --------
+[verse]
 'git pack-refs' [--all] [--no-prune]
 
 DESCRIPTION
@@ -31,7 +32,7 @@ Subsequent updates to branches always create new files under
 
 A recommended practice to deal with a repository with too many
 refs is to pack its refs with `--all --prune` once, and
-occasionally run `git pack-refs \--prune`.  Tags are by
+occasionally run `git pack-refs --prune`.  Tags are by
 definition stationary and are not expected to change.  Branch
 heads will be packed with the initial `pack-refs --all`, but
 only the currently active branch heads will become unpacked,
@@ -55,11 +56,6 @@ a repository with many branches of historical interests.
 
 The command usually removes loose refs under `$GIT_DIR/refs`
 hierarchy after packing them.  This option tells it not to.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
 
 GIT
 ---

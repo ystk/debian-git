@@ -47,8 +47,10 @@ test_expect_success 'setup - repository to add submodules to' '
 '
 
 # The 'submodule add' tests need some repository to add as a submodule.
-# The trash directory is a good one as any.
-submodurl=$TRASH_DIRECTORY
+# The trash directory is a good one as any. We need to canonicalize
+# the name, though, as some tests compare it to the absolute path git
+# generates, which will expand symbolic links.
+submodurl=$(pwd -P)
 
 listbranches() {
 	git for-each-ref --format='%(refname)' 'refs/heads/*'
@@ -75,7 +77,17 @@ test_expect_success 'submodule add' '
 
 	(
 		cd addtest &&
-		git submodule add "$submodurl" submod &&
+		git submodule add -q "$submodurl" submod >actual &&
+		test ! -s actual &&
+		echo "gitdir: ../.git/modules/submod" >expect &&
+		test_cmp expect submod/.git &&
+		(
+			cd submod &&
+			git config core.worktree >actual &&
+			echo "../../../submod" >expect &&
+			test_cmp expect actual &&
+			rm -f actual expect
+		) &&
 		git submodule init
 	) &&
 
@@ -99,7 +111,7 @@ test_expect_success 'submodule add to .gitignored path fails' '
 		git add --force .gitignore &&
 		git commit -m"Ignore everything" &&
 		! git submodule add "$submodurl" submod >actual 2>&1 &&
-		test_cmp expect actual
+		test_i18ncmp expect actual
 	)
 '
 
@@ -222,7 +234,7 @@ EOF
 
 test_expect_success 'status should only print one line' '
 	git submodule status >lines &&
-	test $(wc -l <lines) = 1
+	test_line_count = 1 lines
 '
 
 test_expect_success 'setup - fetch commit name from submodule' '
@@ -273,7 +285,8 @@ test_expect_success 'update should work when path is an empty dir' '
 	echo "$rev1" >expect &&
 
 	mkdir init &&
-	git submodule update &&
+	git submodule update -q >update.out &&
+	test ! -s update.out &&
 
 	inspect init &&
 	test_cmp expect head-sha1
@@ -357,11 +370,11 @@ test_expect_success 'update --init' '
 
 	git submodule update init > update.out &&
 	cat update.out &&
-	grep "not initialized" update.out &&
-	! test -d init/.git &&
+	test_i18ngrep "not initialized" update.out &&
+	test_must_fail git rev-parse --resolve-git-dir init/.git &&
 
 	git submodule update --init init &&
-	test -d init/.git
+	git rev-parse --resolve-git-dir init/.git
 '
 
 test_expect_success 'do not add files from a submodule' '
@@ -413,18 +426,98 @@ test_expect_success 'submodule <invalid-path> warns' '
 
 test_expect_success 'add submodules without specifying an explicit path' '
 	mkdir repo &&
-	cd repo &&
-	git init &&
-	echo r >r &&
-	git add r &&
-	git commit -m "repo commit 1" &&
-	cd .. &&
+	(
+		cd repo &&
+		git init &&
+		echo r >r &&
+		git add r &&
+		git commit -m "repo commit 1"
+	) &&
 	git clone --bare repo/ bare.git &&
-	cd addtest &&
-	git submodule add "$submodurl/repo" &&
-	git config -f .gitmodules submodule.repo.path repo &&
-	git submodule add "$submodurl/bare.git" &&
-	git config -f .gitmodules submodule.bare.path bare
+	(
+		cd addtest &&
+		git submodule add "$submodurl/repo" &&
+		git config -f .gitmodules submodule.repo.path repo &&
+		git submodule add "$submodurl/bare.git" &&
+		git config -f .gitmodules submodule.bare.path bare
+	)
+'
+
+test_expect_success 'add should fail when path is used by a file' '
+	(
+		cd addtest &&
+		touch file &&
+		test_must_fail	git submodule add "$submodurl/repo" file
+	)
+'
+
+test_expect_success 'add should fail when path is used by an existing directory' '
+	(
+		cd addtest &&
+		mkdir empty-dir &&
+		test_must_fail git submodule add "$submodurl/repo" empty-dir
+	)
+'
+
+test_expect_success 'use superproject as upstream when path is relative and no url is set there' '
+	(
+		cd addtest &&
+		git submodule add ../repo relative &&
+		test "$(git config -f .gitmodules submodule.relative.url)" = ../repo &&
+		git submodule sync relative &&
+		test "$(git config submodule.relative.url)" = "$submodurl/repo"
+	)
+'
+
+test_expect_success 'set up for relative path tests' '
+	mkdir reltest &&
+	(
+		cd reltest &&
+		git init &&
+		mkdir sub &&
+		(
+			cd sub &&
+			git init &&
+			test_commit foo
+		) &&
+		git add sub &&
+		git config -f .gitmodules submodule.sub.path sub &&
+		git config -f .gitmodules submodule.sub.url ../subrepo &&
+		cp .git/config pristine-.git-config
+	)
+'
+
+test_expect_success 'relative path works with URL' '
+	(
+		cd reltest &&
+		cp pristine-.git-config .git/config &&
+		git config remote.origin.url ssh://hostname/repo &&
+		git submodule init &&
+		test "$(git config submodule.sub.url)" = ssh://hostname/subrepo
+	)
+'
+
+test_expect_success 'relative path works with user@host:path' '
+	(
+		cd reltest &&
+		cp pristine-.git-config .git/config &&
+		git config remote.origin.url user@host:repo &&
+		git submodule init &&
+		test "$(git config submodule.sub.url)" = user@host:subrepo
+	)
+'
+
+test_expect_success 'moving the superproject does not break submodules' '
+	(
+		cd addtest &&
+		git submodule status >expect
+	)
+	mv addtest addtest2 &&
+	(
+		cd addtest2 &&
+		git submodule status >actual &&
+		test_cmp expect actual
+	)
 '
 
 test_done

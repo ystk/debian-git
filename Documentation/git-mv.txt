@@ -8,14 +8,15 @@ git-mv - Move or rename a file, a directory, or a symlink
 
 SYNOPSIS
 --------
+[verse]
 'git mv' <options>... <args>...
 
 DESCRIPTION
 -----------
 This script is used to move or rename a file, directory or symlink.
 
- git mv [-f] [-n] <source> <destination>
- git mv [-f] [-n] [-k] <source> ... <destination directory>
+ git mv [-v] [-f] [-n] [-k] <source> <destination>
+ git mv [-v] [-f] [-n] [-k] <source> ... <destination directory>
 
 In the first form, it renames <source>, which must exist and be either
 a file, symlink or directory, to <destination>.
@@ -39,16 +40,9 @@ OPTIONS
 --dry-run::
 	Do nothing; only show what would happen
 
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-Rewritten by Ryan Anderson <ryan@michonline.com>
-Move functionality added by Josef Weidendorfer <Josef.Weidendorfer@gmx.de>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
+-v::
+--verbose::
+	Report the names of files as they are moved.
 
 GIT
 ---

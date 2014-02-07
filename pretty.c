@@ -9,6 +9,7 @@
 #include "notes.h"
 #include "color.h"
 #include "reflog-walk.h"
+#include "gpg-interface.h"
 
 static char *user_format;
 static struct cmt_fmt_map {
@@ -208,6 +209,58 @@ int has_non_ascii(const char *s)
 	return 0;
 }
 
+static int is_rfc822_special(char ch)
+{
+	switch (ch) {
+	case '(':
+	case ')':
+	case '<':
+	case '>':
+	case '[':
+	case ']':
+	case ':':
+	case ';':
+	case '@':
+	case ',':
+	case '.':
+	case '"':
+	case '\\':
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static int has_rfc822_specials(const char *s, int len)
+{
+	int i;
+	for (i = 0; i < len; i++)
+		if (is_rfc822_special(s[i]))
+			return 1;
+	return 0;
+}
+
+static void add_rfc822_quoted(struct strbuf *out, const char *s, int len)
+{
+	int i;
+
+	/* just a guess, we may have to also backslash-quote */
+	strbuf_grow(out, len + 2);
+
+	strbuf_addch(out, '"');
+	for (i = 0; i < len; i++) {
+		switch (s[i]) {
+		case '"':
+		case '\\':
+			strbuf_addch(out, '\\');
+			/* fall through */
+		default:
+			strbuf_addch(out, s[i]);
+		}
+	}
+	strbuf_addch(out, '"');
+}
+
 static int is_rfc2047_special(char ch)
 {
 	return (non_ascii(ch) || (ch == '=') || (ch == '?') || (ch == '_'));
@@ -216,49 +269,66 @@ static int is_rfc2047_special(char ch)
 static void add_rfc2047(struct strbuf *sb, const char *line, int len,
 		       const char *encoding)
 {
-	int i, last;
+	static const int max_length = 78; /* per rfc2822 */
+	int i;
+	int line_len;
+
+	/* How many bytes are already used on the current line? */
+	for (i = sb->len - 1; i >= 0; i--)
+		if (sb->buf[i] == '\n')
+			break;
+	line_len = sb->len - (i+1);
 
 	for (i = 0; i < len; i++) {
 		int ch = line[i];
-		if (non_ascii(ch))
+		if (non_ascii(ch) || ch == '\n')
 			goto needquote;
 		if ((i + 1 < len) && (ch == '=' && line[i+1] == '?'))
 			goto needquote;
 	}
-	strbuf_add(sb, line, len);
+	strbuf_add_wrapped_bytes(sb, line, len, 0, 1, max_length - line_len);
 	return;
 
 needquote:
 	strbuf_grow(sb, len * 3 + strlen(encoding) + 100);
 	strbuf_addf(sb, "=?%s?q?", encoding);
-	for (i = last = 0; i < len; i++) {
+	line_len += strlen(encoding) + 5; /* 5 for =??q? */
+	for (i = 0; i < len; i++) {
 		unsigned ch = line[i] & 0xFF;
+
+		if (line_len >= max_length - 2) {
+			strbuf_addf(sb, "?=\n =?%s?q?", encoding);
+			line_len = strlen(encoding) + 5 + 1; /* =??q? plus SP */
+		}
+
 		/*
 		 * We encode ' ' using '=20' even though rfc2047
 		 * allows using '_' for readability.  Unfortunately,
 		 * many programs do not understand this and just
 		 * leave the underscore in place.
 		 */
-		if (is_rfc2047_special(ch) || ch == ' ') {
-			strbuf_add(sb, line + last, i - last);
+		if (is_rfc2047_special(ch) || ch == ' ' || ch == '\n') {
 			strbuf_addf(sb, "=%02X", ch);
-			last = i + 1;
+			line_len += 3;
+		}
+		else {
+			strbuf_addch(sb, ch);
+			line_len++;
 		}
 	}
-	strbuf_add(sb, line + last, len - last);
 	strbuf_addstr(sb, "?=");
 }
 
-void pp_user_info(const char *what, enum cmit_fmt fmt, struct strbuf *sb,
-		  const char *line, enum date_mode dmode,
-		  const char *encoding)
+void pp_user_info(const struct pretty_print_context *pp,
+		  const char *what, struct strbuf *sb,
+		  const char *line, const char *encoding)
 {
 	char *date;
 	int namelen;
 	unsigned long time;
 	int tz;
 
-	if (fmt == CMIT_FMT_ONELINE)
+	if (pp->fmt == CMIT_FMT_ONELINE)
 		return;
 	date = strchr(line, '>');
 	if (!date)
@@ -267,32 +337,48 @@ void pp_user_info(const char *what, enum cmit_fmt fmt, struct strbuf *sb,
 	time = strtoul(date, &date, 10);
 	tz = strtol(date, NULL, 10);
 
-	if (fmt == CMIT_FMT_EMAIL) {
+	if (pp->fmt == CMIT_FMT_EMAIL) {
 		char *name_tail = strchr(line, '<');
 		int display_name_length;
+		int final_line;
 		if (!name_tail)
 			return;
 		while (line < name_tail && isspace(name_tail[-1]))
 			name_tail--;
 		display_name_length = name_tail - line;
 		strbuf_addstr(sb, "From: ");
-		add_rfc2047(sb, line, display_name_length, encoding);
+		if (!has_rfc822_specials(line, display_name_length)) {
+			add_rfc2047(sb, line, display_name_length, encoding);
+		} else {
+			struct strbuf quoted = STRBUF_INIT;
+			add_rfc822_quoted(&quoted, line, display_name_length);
+			add_rfc2047(sb, quoted.buf, quoted.len, encoding);
+			strbuf_release(&quoted);
+		}
+		for (final_line = 0; final_line < sb->len; final_line++)
+			if (sb->buf[sb->len - final_line - 1] == '\n')
+				break;
+		if (namelen - display_name_length + final_line > 78) {
+			strbuf_addch(sb, '\n');
+			if (!isspace(name_tail[0]))
+				strbuf_addch(sb, ' ');
+		}
 		strbuf_add(sb, name_tail, namelen - display_name_length);
 		strbuf_addch(sb, '\n');
 	} else {
 		strbuf_addf(sb, "%s: %.*s%.*s\n", what,
-			      (fmt == CMIT_FMT_FULLER) ? 4 : 0,
+			      (pp->fmt == CMIT_FMT_FULLER) ? 4 : 0,
 			      "    ", namelen, line);
 	}
-	switch (fmt) {
+	switch (pp->fmt) {
 	case CMIT_FMT_MEDIUM:
-		strbuf_addf(sb, "Date:   %s\n", show_date(time, tz, dmode));
+		strbuf_addf(sb, "Date:   %s\n", show_date(time, tz, pp->date_mode));
 		break;
 	case CMIT_FMT_EMAIL:
 		strbuf_addf(sb, "Date: %s\n", show_date(time, tz, DATE_RFC2822));
 		break;
 	case CMIT_FMT_FULLER:
-		strbuf_addf(sb, "%sDate: %s\n", what, show_date(time, tz, dmode));
+		strbuf_addf(sb, "%sDate: %s\n", what, show_date(time, tz, pp->date_mode));
 		break;
 	default:
 		/* notin' */
@@ -323,12 +409,12 @@ static const char *skip_empty_lines(const char *msg)
 	return msg;
 }
 
-static void add_merge_info(enum cmit_fmt fmt, struct strbuf *sb,
-			const struct commit *commit, int abbrev)
+static void add_merge_info(const struct pretty_print_context *pp,
+			   struct strbuf *sb, const struct commit *commit)
 {
 	struct commit_list *parent = commit->parents;
 
-	if ((fmt == CMIT_FMT_ONELINE) || (fmt == CMIT_FMT_EMAIL) ||
+	if ((pp->fmt == CMIT_FMT_ONELINE) || (pp->fmt == CMIT_FMT_EMAIL) ||
 	    !parent || !parent->next)
 		return;
 
@@ -337,8 +423,8 @@ static void add_merge_info(enum cmit_fmt fmt, struct strbuf *sb,
 	while (parent) {
 		struct commit *p = parent->item;
 		const char *hex = NULL;
-		if (abbrev)
-			hex = find_unique_abbrev(p->object.sha1, abbrev);
+		if (pp->abbrev)
+			hex = find_unique_abbrev(p->object.sha1, pp->abbrev);
 		if (!hex)
 			hex = sha1_to_hex(p->object.sha1);
 		parent = parent->next;
@@ -353,12 +439,14 @@ static char *get_header(const struct commit *commit, const char *key)
 	int key_len = strlen(key);
 	const char *line = commit->buffer;
 
-	for (;;) {
+	while (line) {
 		const char *eol = strchr(line, '\n'), *next;
 
 		if (line == eol)
 			return NULL;
 		if (!eol) {
+			warning("malformed commit (header is missing newline): %s",
+				sha1_to_hex(commit->object.sha1));
 			eol = line + strlen(line);
 			next = NULL;
 		} else
@@ -370,6 +458,7 @@ static char *get_header(const struct commit *commit, const char *key)
 		}
 		line = next;
 	}
+	return NULL;
 }
 
 static char *replace_encoding_header(char *buf, const char *encoding)
@@ -403,8 +492,8 @@ static char *replace_encoding_header(char *buf, const char *encoding)
 	return strbuf_detach(&tmp, NULL);
 }
 
-static char *logmsg_reencode(const struct commit *commit,
-			     const char *output_encoding)
+char *logmsg_reencode(const struct commit *commit,
+		      const char *output_encoding)
 {
 	static const char *utf8 = "UTF-8";
 	const char *use_encoding;
@@ -445,41 +534,26 @@ static size_t format_person_part(struct strbuf *sb, char part,
 {
 	/* currently all placeholders have same length */
 	const int placeholder_len = 2;
-	int start, end, tz = 0;
+	int tz;
 	unsigned long date = 0;
-	char *ep;
-	const char *name_start, *name_end, *mail_start, *mail_end, *msg_end = msg+len;
 	char person_name[1024];
 	char person_mail[1024];
+	struct ident_split s;
+	const char *name_start, *name_end, *mail_start, *mail_end;
 
-	/* advance 'end' to point to email start delimiter */
-	for (end = 0; end < len && msg[end] != '<'; end++)
-		; /* do nothing */
-
-	/*
-	 * When end points at the '<' that we found, it should have
-	 * matching '>' later, which means 'end' must be strictly
-	 * below len - 1.
-	 */
-	if (end >= len - 2)
+	if (split_ident_line(&s, msg, len) < 0)
 		goto skip;
 
-	/* Seek for both name and email part */
-	name_start = msg;
-	name_end = msg+end;
-	while (name_end > name_start && isspace(*(name_end-1)))
-		name_end--;
-	mail_start = msg+end+1;
-	mail_end = mail_start;
-	while (mail_end < msg_end && *mail_end != '>')
-		mail_end++;
-	if (mail_end == msg_end)
-		goto skip;
-	end = mail_end-msg;
+	name_start = s.name_begin;
+	name_end = s.name_end;
+	mail_start = s.mail_begin;
+	mail_end = s.mail_end;
 
 	if (part == 'N' || part == 'E') { /* mailmap lookup */
-		strlcpy(person_name, name_start, name_end-name_start+1);
-		strlcpy(person_mail, mail_start, mail_end-mail_start+1);
+		snprintf(person_name, sizeof(person_name), "%.*s",
+			 (int)(name_end - name_start), name_start);
+		snprintf(person_mail, sizeof(person_mail), "%.*s",
+			 (int)(mail_end - mail_start), mail_start);
 		mailmap_name(person_mail, sizeof(person_mail), person_name, sizeof(person_name));
 		name_start = person_name;
 		name_end = name_start + strlen(person_name);
@@ -495,28 +569,20 @@ static size_t format_person_part(struct strbuf *sb, char part,
 		return placeholder_len;
 	}
 
-	/* advance 'start' to point to date start delimiter */
-	for (start = end + 1; start < len && isspace(msg[start]); start++)
-		; /* do nothing */
-	if (start >= len)
-		goto skip;
-	date = strtoul(msg + start, &ep, 10);
-	if (msg + start == ep)
+	if (!s.date_begin)
 		goto skip;
 
+	date = strtoul(s.date_begin, NULL, 10);
+
 	if (part == 't') {	/* date, UNIX timestamp */
-		strbuf_add(sb, msg + start, ep - (msg + start));
+		strbuf_add(sb, s.date_begin, s.date_end - s.date_begin);
 		return placeholder_len;
 	}
 
 	/* parse tz */
-	for (start = ep - msg + 1; start < len && isspace(msg[start]); start++)
-		; /* do nothing */
-	if (start + 1 < len) {
-		tz = strtoul(msg + start + 1, NULL, 10);
-		if (msg[start] == '-')
-			tz = -tz;
-	}
+	tz = strtoul(s.tz_begin + 1, NULL, 10);
+	if (*s.tz_begin == '-')
+		tz = -tz;
 
 	switch (part) {
 	case 'd':	/* date */
@@ -535,8 +601,9 @@ static size_t format_person_part(struct strbuf *sb, char part,
 
 skip:
 	/*
-	 * bogus commit, 'sb' cannot be updated, but we still need to
-	 * compute a valid return value.
+	 * reading from either a bogus commit, or a reflog entry with
+	 * %gn, %ge, etc.; 'sb' cannot be updated, but we still need
+	 * to compute a valid return value.
 	 */
 	if (part == 'n' || part == 'e' || part == 't' || part == 'd'
 	    || part == 'D' || part == 'r' || part == 'i')
@@ -555,6 +622,13 @@ struct format_commit_context {
 	const struct pretty_print_context *pretty_ctx;
 	unsigned commit_header_parsed:1;
 	unsigned commit_message_parsed:1;
+	unsigned commit_signature_parsed:1;
+	struct {
+		char *gpg_output;
+		char good_bad;
+		char *signer;
+	} signature;
+	char *message;
 	size_t width, indent1, indent2;
 
 	/* These offsets are relative to the start of the commit message. */
@@ -591,7 +665,7 @@ static int add_again(struct strbuf *sb, struct chunk *chunk)
 
 static void parse_commit_header(struct format_commit_context *context)
 {
-	const char *msg = context->commit->buffer;
+	const char *msg = context->message;
 	int i;
 
 	for (i = 0; msg[i]; i++) {
@@ -677,8 +751,8 @@ const char *format_subject(struct strbuf *sb, const char *msg,
 
 static void parse_commit_message(struct format_commit_context *c)
 {
-	const char *msg = c->commit->buffer + c->message_off;
-	const char *start = c->commit->buffer;
+	const char *msg = c->message + c->message_off;
+	const char *start = c->message;
 
 	msg = skip_empty_lines(msg);
 	c->subject_off = msg - start;
@@ -736,12 +810,82 @@ static void rewrap_message_tail(struct strbuf *sb,
 	c->indent2 = new_indent2;
 }
 
+static struct {
+	char result;
+	const char *check;
+} signature_check[] = {
+	{ 'G', ": Good signature from " },
+	{ 'B', ": BAD signature from " },
+};
+
+static void parse_signature_lines(struct format_commit_context *ctx)
+{
+	const char *buf = ctx->signature.gpg_output;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(signature_check); i++) {
+		const char *found = strstr(buf, signature_check[i].check);
+		const char *next;
+		if (!found)
+			continue;
+		ctx->signature.good_bad = signature_check[i].result;
+		found += strlen(signature_check[i].check);
+		next = strchrnul(found, '\n');
+		ctx->signature.signer = xmemdupz(found, next - found);
+		break;
+	}
+}
+
+static void parse_commit_signature(struct format_commit_context *ctx)
+{
+	struct strbuf payload = STRBUF_INIT;
+	struct strbuf signature = STRBUF_INIT;
+	struct strbuf gpg_output = STRBUF_INIT;
+	int status;
+
+	ctx->commit_signature_parsed = 1;
+
+	if (parse_signed_commit(ctx->commit->object.sha1,
+				&payload, &signature) <= 0)
+		goto out;
+	status = verify_signed_buffer(payload.buf, payload.len,
+				      signature.buf, signature.len,
+				      &gpg_output);
+	if (status && !gpg_output.len)
+		goto out;
+	ctx->signature.gpg_output = strbuf_detach(&gpg_output, NULL);
+	parse_signature_lines(ctx);
+
+ out:
+	strbuf_release(&gpg_output);
+	strbuf_release(&payload);
+	strbuf_release(&signature);
+}
+
+
+static int format_reflog_person(struct strbuf *sb,
+				char part,
+				struct reflog_walk_info *log,
+				enum date_mode dmode)
+{
+	const char *ident;
+
+	if (!log)
+		return 2;
+
+	ident = get_reflog_ident(log);
+	if (!ident)
+		return 2;
+
+	return format_person_part(sb, part, ident, strlen(ident), dmode);
+}
+
 static size_t format_commit_one(struct strbuf *sb, const char *placeholder,
 				void *context)
 {
 	struct format_commit_context *c = context;
 	const struct commit *commit = c->commit;
-	const char *msg = commit->buffer;
+	const char *msg = c->message;
 	struct commit_list *p;
 	int h1, h2;
 
@@ -858,11 +1002,7 @@ static size_t format_commit_one(struct strbuf *sb, const char *placeholder,
 		                              c->abbrev_parent_hashes.off;
 		return 1;
 	case 'm':		/* left/right/bottom */
-		strbuf_addch(sb, (commit->object.flags & BOUNDARY)
-		                 ? '-'
-		                 : (commit->object.flags & SYMMETRIC_LEFT)
-		                 ? '<'
-		                 : '>');
+		strbuf_addstr(sb, get_revision_mark(NULL, commit));
 		return 1;
 	case 'd':
 		format_decoration(sb, commit);
@@ -875,23 +1015,55 @@ static size_t format_commit_one(struct strbuf *sb, const char *placeholder,
 				get_reflog_selector(sb,
 						    c->pretty_ctx->reflog_info,
 						    c->pretty_ctx->date_mode,
+						    c->pretty_ctx->date_mode_explicit,
 						    (placeholder[1] == 'd'));
 			return 2;
 		case 's':	/* reflog message */
 			if (c->pretty_ctx->reflog_info)
 				get_reflog_message(sb, c->pretty_ctx->reflog_info);
 			return 2;
+		case 'n':
+		case 'N':
+		case 'e':
+		case 'E':
+			return format_reflog_person(sb,
+						    placeholder[1],
+						    c->pretty_ctx->reflog_info,
+						    c->pretty_ctx->date_mode);
 		}
 		return 0;	/* unknown %g placeholder */
 	case 'N':
 		if (c->pretty_ctx->show_notes) {
 			format_display_notes(commit->object.sha1, sb,
-				    git_log_output_encoding ? git_log_output_encoding
-							    : git_commit_encoding, 0);
+				    get_log_output_encoding(), 0);
 			return 1;
 		}
 		return 0;
 	}
+
+	if (placeholder[0] == 'G') {
+		if (!c->commit_signature_parsed)
+			parse_commit_signature(c);
+		switch (placeholder[1]) {
+		case 'G':
+			if (c->signature.gpg_output)
+				strbuf_addstr(sb, c->signature.gpg_output);
+			break;
+		case '?':
+			switch (c->signature.good_bad) {
+			case 'G':
+			case 'B':
+				strbuf_addch(sb, c->signature.good_bad);
+			}
+			break;
+		case 'S':
+			if (c->signature.signer)
+				strbuf_addstr(sb, c->signature.signer);
+			break;
+		}
+		return 2;
+	}
+
 
 	/* For the rest we have to parse the commit header. */
 	if (!c->commit_header_parsed)
@@ -1003,7 +1175,7 @@ void userformat_find_requirements(const char *fmt, struct userformat_want *w)
 			return;
 		fmt = user_format;
 	}
-	strbuf_expand(&dummy, user_format, userformat_want_item, w);
+	strbuf_expand(&dummy, fmt, userformat_want_item, w);
 	strbuf_release(&dummy);
 }
 
@@ -1012,18 +1184,34 @@ void format_commit_message(const struct commit *commit,
 			   const struct pretty_print_context *pretty_ctx)
 {
 	struct format_commit_context context;
+	static const char utf8[] = "UTF-8";
+	const char *output_enc = pretty_ctx->output_encoding;
 
 	memset(&context, 0, sizeof(context));
 	context.commit = commit;
 	context.pretty_ctx = pretty_ctx;
 	context.wrap_start = sb->len;
+	context.message = commit->buffer;
+	if (output_enc) {
+		char *enc = get_header(commit, "encoding");
+		if (strcmp(enc ? enc : utf8, output_enc)) {
+			context.message = logmsg_reencode(commit, output_enc);
+			if (!context.message)
+				context.message = commit->buffer;
+		}
+		free(enc);
+	}
+
 	strbuf_expand(sb, format, format_commit_item, &context);
 	rewrap_message_tail(sb, &context, 0, 0, 0);
+
+	if (context.message != commit->buffer)
+		free(context.message);
+	free(context.signature.gpg_output);
+	free(context.signature.signer);
 }
 
-static void pp_header(enum cmit_fmt fmt,
-		      int abbrev,
-		      enum date_mode dmode,
+static void pp_header(const struct pretty_print_context *pp,
 		      const char *encoding,
 		      const struct commit *commit,
 		      const char **msg_p,
@@ -1043,7 +1231,7 @@ static void pp_header(enum cmit_fmt fmt,
 			/* End of header */
 			return;
 
-		if (fmt == CMIT_FMT_RAW) {
+		if (pp->fmt == CMIT_FMT_RAW) {
 			strbuf_add(sb, line, linelen);
 			continue;
 		}
@@ -1063,7 +1251,7 @@ static void pp_header(enum cmit_fmt fmt,
 				;
 			/* with enough slop */
 			strbuf_grow(sb, num * 50 + 20);
-			add_merge_info(fmt, sb, commit, abbrev);
+			add_merge_info(pp, sb, commit);
 			parents_shown = 1;
 		}
 
@@ -1074,33 +1262,31 @@ static void pp_header(enum cmit_fmt fmt,
 		 */
 		if (!memcmp(line, "author ", 7)) {
 			strbuf_grow(sb, linelen + 80);
-			pp_user_info("Author", fmt, sb, line + 7, dmode, encoding);
+			pp_user_info(pp, "Author", sb, line + 7, encoding);
 		}
 		if (!memcmp(line, "committer ", 10) &&
-		    (fmt == CMIT_FMT_FULL || fmt == CMIT_FMT_FULLER)) {
+		    (pp->fmt == CMIT_FMT_FULL || pp->fmt == CMIT_FMT_FULLER)) {
 			strbuf_grow(sb, linelen + 80);
-			pp_user_info("Commit", fmt, sb, line + 10, dmode, encoding);
+			pp_user_info(pp, "Commit", sb, line + 10, encoding);
 		}
 	}
 }
 
-void pp_title_line(enum cmit_fmt fmt,
+void pp_title_line(const struct pretty_print_context *pp,
 		   const char **msg_p,
 		   struct strbuf *sb,
-		   const char *subject,
-		   const char *after_subject,
 		   const char *encoding,
 		   int need_8bit_cte)
 {
-	const char *line_separator = (fmt == CMIT_FMT_EMAIL) ? "\n " : " ";
 	struct strbuf title;
 
 	strbuf_init(&title, 80);
-	*msg_p = format_subject(&title, *msg_p, line_separator);
+	*msg_p = format_subject(&title, *msg_p,
+				pp->preserve_subject ? "\n" : " ");
 
 	strbuf_grow(sb, title.len + 1024);
-	if (subject) {
-		strbuf_addstr(sb, subject);
+	if (pp->subject) {
+		strbuf_addstr(sb, pp->subject);
 		add_rfc2047(sb, title.buf, title.len, encoding);
 	} else {
 		strbuf_addbuf(sb, &title);
@@ -1114,16 +1300,16 @@ void pp_title_line(enum cmit_fmt fmt,
 			"Content-Transfer-Encoding: 8bit\n";
 		strbuf_addf(sb, header_fmt, encoding);
 	}
-	if (after_subject) {
-		strbuf_addstr(sb, after_subject);
+	if (pp->after_subject) {
+		strbuf_addstr(sb, pp->after_subject);
 	}
-	if (fmt == CMIT_FMT_EMAIL) {
+	if (pp->fmt == CMIT_FMT_EMAIL) {
 		strbuf_addch(sb, '\n');
 	}
 	strbuf_release(&title);
 }
 
-void pp_remainder(enum cmit_fmt fmt,
+void pp_remainder(const struct pretty_print_context *pp,
 		  const char **msg_p,
 		  struct strbuf *sb,
 		  int indent)
@@ -1140,7 +1326,7 @@ void pp_remainder(enum cmit_fmt fmt,
 		if (is_empty_line(line, &linelen)) {
 			if (first)
 				continue;
-			if (fmt == CMIT_FMT_SHORT)
+			if (pp->fmt == CMIT_FMT_SHORT)
 				break;
 		}
 		first = 0;
@@ -1159,29 +1345,25 @@ char *reencode_commit_message(const struct commit *commit, const char **encoding
 {
 	const char *encoding;
 
-	encoding = (git_log_output_encoding
-		    ? git_log_output_encoding
-		    : git_commit_encoding);
-	if (!encoding)
-		encoding = "UTF-8";
+	encoding = get_log_output_encoding();
 	if (encoding_p)
 		*encoding_p = encoding;
 	return logmsg_reencode(commit, encoding);
 }
 
-void pretty_print_commit(enum cmit_fmt fmt, const struct commit *commit,
-			 struct strbuf *sb,
-			 const struct pretty_print_context *context)
+void pretty_print_commit(const struct pretty_print_context *pp,
+			 const struct commit *commit,
+			 struct strbuf *sb)
 {
 	unsigned long beginning_of_body;
 	int indent = 4;
 	const char *msg = commit->buffer;
 	char *reencoded;
 	const char *encoding;
-	int need_8bit_cte = context->need_8bit_cte;
+	int need_8bit_cte = pp->need_8bit_cte;
 
-	if (fmt == CMIT_FMT_USERFORMAT) {
-		format_commit_message(commit, user_format, sb, context);
+	if (pp->fmt == CMIT_FMT_USERFORMAT) {
+		format_commit_message(commit, user_format, sb, pp);
 		return;
 	}
 
@@ -1190,14 +1372,14 @@ void pretty_print_commit(enum cmit_fmt fmt, const struct commit *commit,
 		msg = reencoded;
 	}
 
-	if (fmt == CMIT_FMT_ONELINE || fmt == CMIT_FMT_EMAIL)
+	if (pp->fmt == CMIT_FMT_ONELINE || pp->fmt == CMIT_FMT_EMAIL)
 		indent = 0;
 
 	/*
 	 * We need to check and emit Content-type: to mark it
 	 * as 8-bit if we haven't done so.
 	 */
-	if (fmt == CMIT_FMT_EMAIL && need_8bit_cte == 0) {
+	if (pp->fmt == CMIT_FMT_EMAIL && need_8bit_cte == 0) {
 		int i, ch, in_body;
 
 		for (in_body = i = 0; (ch = msg[i]); i++) {
@@ -1216,9 +1398,8 @@ void pretty_print_commit(enum cmit_fmt fmt, const struct commit *commit,
 		}
 	}
 
-	pp_header(fmt, context->abbrev, context->date_mode, encoding,
-		  commit, &msg, sb);
-	if (fmt != CMIT_FMT_ONELINE && !context->subject) {
+	pp_header(pp, encoding, commit, &msg, sb);
+	if (pp->fmt != CMIT_FMT_ONELINE && !pp->subject) {
 		strbuf_addch(sb, '\n');
 	}
 
@@ -1226,17 +1407,16 @@ void pretty_print_commit(enum cmit_fmt fmt, const struct commit *commit,
 	msg = skip_empty_lines(msg);
 
 	/* These formats treat the title line specially. */
-	if (fmt == CMIT_FMT_ONELINE || fmt == CMIT_FMT_EMAIL)
-		pp_title_line(fmt, &msg, sb, context->subject,
-			      context->after_subject, encoding, need_8bit_cte);
+	if (pp->fmt == CMIT_FMT_ONELINE || pp->fmt == CMIT_FMT_EMAIL)
+		pp_title_line(pp, &msg, sb, encoding, need_8bit_cte);
 
 	beginning_of_body = sb->len;
-	if (fmt != CMIT_FMT_ONELINE)
-		pp_remainder(fmt, &msg, sb, indent);
+	if (pp->fmt != CMIT_FMT_ONELINE)
+		pp_remainder(pp, &msg, sb, indent);
 	strbuf_rtrim(sb);
 
 	/* Make sure there is an EOLN for the non-oneline case */
-	if (fmt != CMIT_FMT_ONELINE)
+	if (pp->fmt != CMIT_FMT_ONELINE)
 		strbuf_addch(sb, '\n');
 
 	/*
@@ -1244,12 +1424,20 @@ void pretty_print_commit(enum cmit_fmt fmt, const struct commit *commit,
 	 * format.  Make sure we did not strip the blank line
 	 * between the header and the body.
 	 */
-	if (fmt == CMIT_FMT_EMAIL && sb->len <= beginning_of_body)
+	if (pp->fmt == CMIT_FMT_EMAIL && sb->len <= beginning_of_body)
 		strbuf_addch(sb, '\n');
 
-	if (context->show_notes)
+	if (pp->show_notes)
 		format_display_notes(commit->object.sha1, sb, encoding,
 				     NOTES_SHOW_HEADER | NOTES_INDENT);
 
 	free(reencoded);
+}
+
+void pp_commit_easy(enum cmit_fmt fmt, const struct commit *commit,
+		    struct strbuf *sb)
+{
+	struct pretty_print_context pp = {0};
+	pp.fmt = fmt;
+	pretty_print_commit(&pp, commit, sb);
 }

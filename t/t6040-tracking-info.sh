@@ -48,7 +48,23 @@ test_expect_success 'branch -v' '
 		git branch -v
 	) |
 	sed -n -e "$script" >actual &&
-	test_cmp expect actual
+	test_i18ncmp expect actual
+'
+
+cat >expect <<\EOF
+b1 origin/master: ahead 1, behind 1
+b2 origin/master: ahead 1, behind 1
+b3 origin/master: behind 1
+b4 origin/master: ahead 2
+EOF
+
+test_expect_success 'branch -vv' '
+	(
+		cd test &&
+		git branch -vv
+	) |
+	sed -n -e "$script" >actual &&
+	test_i18ncmp expect actual
 '
 
 test_expect_success 'checkout' '
@@ -60,7 +76,7 @@ test_expect_success 'checkout' '
 
 test_expect_success 'checkout with local tracked branch' '
 	git checkout master &&
-	git checkout follower >actual
+	git checkout follower >actual &&
 	grep "is ahead of" actual
 '
 
@@ -74,20 +90,20 @@ test_expect_success 'status' '
 	grep "have 1 and 1 different" actual
 '
 
-test_expect_success 'status when tracking lightweight tags' '
+test_expect_success 'fail to track lightweight tags' '
 	git checkout master &&
 	git tag light &&
-	git branch --track lighttrack light >actual &&
-	grep "set up to track" actual &&
-	git checkout lighttrack
+	test_must_fail git branch --track lighttrack light >actual &&
+	test_must_fail grep "set up to track" actual &&
+	test_must_fail git checkout lighttrack
 '
 
-test_expect_success 'status when tracking annotated tags' '
+test_expect_success 'fail to track annotated tags' '
 	git checkout master &&
 	git tag -m heavy heavy &&
-	git branch --track heavytrack heavy >actual &&
-	grep "set up to track" actual &&
-	git checkout heavytrack
+	test_must_fail git branch --track heavytrack heavy >actual &&
+	test_must_fail grep "set up to track" actual &&
+	test_must_fail git checkout heavytrack
 '
 
 test_expect_success 'setup tracking with branch --set-upstream on existing branch' '
@@ -110,4 +126,18 @@ test_expect_success '--set-upstream does not change branch' '
 	grep -q "^refs/heads/master$" actual &&
 	cmp expect2 actual2
 '
+
+test_expect_success '--set-upstream @{-1}' '
+	git checkout from-master &&
+	git checkout from-master2 &&
+	git config branch.from-master2.merge > expect2 &&
+	git branch --set-upstream @{-1} follower &&
+	git config branch.from-master.merge > actual &&
+	git config branch.from-master2.merge > actual2 &&
+	git branch --set-upstream from-master follower &&
+	git config branch.from-master.merge > expect &&
+	test_cmp expect2 actual2 &&
+	test_cmp expect actual
+'
+
 test_done

@@ -1,6 +1,7 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 # Copyright (C) 2006, Eric Wong <normalperson@yhbt.net>
 # License: GPL v2 or later
+use 5.008;
 use warnings;
 use strict;
 use vars qw/	$AUTHOR $VERSION
@@ -21,14 +22,13 @@ $Git::SVN::default_ref_id = $ENV{GIT_SVN_ID} || 'git-svn';
 $Git::SVN::Ra::_log_window_size = 100;
 $Git::SVN::_minimize_url = 'unset';
 
-if (! exists $ENV{SVN_SSH}) {
-	if (exists $ENV{GIT_SSH}) {
-		$ENV{SVN_SSH} = $ENV{GIT_SSH};
-		if ($^O eq 'msys') {
-			$ENV{SVN_SSH} =~ s/\\/\\\\/g;
-			$ENV{SVN_SSH} =~ s/(.*)/"$1"/;
-		}
-	}
+if (! exists $ENV{SVN_SSH} && exists $ENV{GIT_SSH}) {
+	$ENV{SVN_SSH} = $ENV{GIT_SSH};
+}
+
+if (exists $ENV{SVN_SSH} && $^O eq 'msys') {
+	$ENV{SVN_SSH} =~ s/\\/\\\\/g;
+	$ENV{SVN_SSH} =~ s/(.*)/"$1"/;
 }
 
 $Git::SVN::Log::TZ = $ENV{TZ};
@@ -58,6 +58,7 @@ use File::Find;
 use Getopt::Long qw/:config gnu_getopt no_ignore_case auto_abbrev/;
 use IPC::Open3;
 use Git;
+use Memoize;  # core since 5.8.0, Jul 2002
 
 BEGIN {
 	# import functions from Git into our packages, en masse
@@ -71,6 +72,8 @@ BEGIN {
 			*{"${package}::$_"} = \&{"Git::$_"};
 		}
 	}
+	Memoize::memoize 'Git::config';
+	Memoize::memoize 'Git::config_bool';
 }
 
 my ($SVN);
@@ -83,13 +86,15 @@ my ($_stdin, $_help, $_edit,
 	$_version, $_fetch_all, $_no_rebase, $_fetch_parent,
 	$_merge, $_strategy, $_dry_run, $_local,
 	$_prefix, $_no_checkout, $_url, $_verbose,
-	$_git_format, $_commit_url, $_tag);
+	$_git_format, $_commit_url, $_tag, $_merge_info, $_interactive);
 $Git::SVN::_follow_parent = 1;
+$SVN::Git::Fetcher::_placeholder_filename = ".gitignore";
 $_q ||= 0;
 my %remote_opts = ( 'username=s' => \$Git::SVN::Prompt::_username,
                     'config-dir=s' => \$Git::SVN::Ra::config_dir,
                     'no-auth-cache' => \$Git::SVN::Prompt::_no_auth_cache,
-                    'ignore-paths=s' => \$SVN::Git::Fetcher::_ignore_regex );
+                    'ignore-paths=s' => \$SVN::Git::Fetcher::_ignore_regex,
+                    'ignore-refs=s' => \$Git::SVN::Ra::_ignore_refs_regex );
 my %fc_opts = ( 'follow-parent|follow!' => \$Git::SVN::_follow_parent,
 		'authors-file|A=s' => \$_authors,
 		'authors-prog=s' => \$_authors_prog,
@@ -135,6 +140,10 @@ my %cmd = (
 			   %fc_opts } ],
 	clone => [ \&cmd_clone, "Initialize and fetch revisions",
 			{ 'revision|r=s' => \$_revision,
+			  'preserve-empty-dirs' =>
+				\$SVN::Git::Fetcher::_preserve_empty_dirs,
+			  'placeholder-filename=s' =>
+				\$SVN::Git::Fetcher::_placeholder_filename,
 			   %fc_opts, %init_opts } ],
 	init => [ \&cmd_init, "Initialize a repo for tracking" .
 			  " (requires URL argument)",
@@ -153,6 +162,8 @@ my %cmd = (
 			  'commit-url=s' => \$_commit_url,
 			  'revision|r=i' => \$_revision,
 			  'no-rebase' => \$_no_rebase,
+			  'mergeinfo=s' => \$_merge_info,
+			  'interactive|i' => \$_interactive,
 			%cmt_opts, %fc_opts } ],
 	branch => [ \&cmd_branch,
 	            'Create a branch in the SVN repository',
@@ -246,6 +257,27 @@ my %cmd = (
 		{} ],
 );
 
+use Term::ReadLine;
+package FakeTerm;
+sub new {
+	my ($class, $reason) = @_;
+	return bless \$reason, shift;
+}
+sub readline {
+	my $self = shift;
+	die "Cannot use readline on FakeTerm: $$self";
+}
+package main;
+
+my $term = eval {
+	$ENV{"GIT_SVN_NOTTY"}
+		? new Term::ReadLine 'git-svn', \*STDIN, \*STDOUT
+		: new Term::ReadLine 'git-svn';
+};
+if ($@) {
+	$term = new FakeTerm "$@: going non-interactive";
+}
+
 my $cmd;
 for (my $i = 0; $i < @ARGV; $i++) {
 	if (defined $cmd{$ARGV[$i]}) {
@@ -289,7 +321,7 @@ read_git_config(\%opts);
 if ($cmd && ($cmd eq 'log' || $cmd eq 'blame')) {
 	Getopt::Long::Configure('pass_through');
 }
-my $rv = GetOptions(%opts, 'help|H|h' => \$_help, 'version|V' => \$_version,
+my $rv = GetOptions(%opts, 'h|H' => \$_help, 'version|V' => \$_version,
                     'minimize-connections' => \$Git::SVN::Migration::_minimize,
                     'id|i=s' => \$Git::SVN::default_ref_id,
                     'svn-remote|remote|R=s' => sub {
@@ -356,6 +388,36 @@ sub version {
 	exit 0;
 }
 
+sub ask {
+	my ($prompt, %arg) = @_;
+	my $valid_re = $arg{valid_re};
+	my $default = $arg{default};
+	my $resp;
+	my $i = 0;
+
+	if ( !( defined($term->IN)
+            && defined( fileno($term->IN) )
+            && defined( $term->OUT )
+            && defined( fileno($term->OUT) ) ) ){
+		return defined($default) ? $default : undef;
+	}
+
+	while ($i++ < 10) {
+		$resp = $term->readline($prompt);
+		if (!defined $resp) { # EOF
+			print "\n";
+			return defined $default ? $default : undef;
+		}
+		if ($resp eq '' and defined $default) {
+			return $default;
+		}
+		if (!defined $valid_re or $resp =~ /$valid_re/) {
+			return $resp;
+		}
+	}
+	return undef;
+}
+
 sub do_git_init_db {
 	unless (-d $ENV{GIT_DIR}) {
 		my @init_db = ('init');
@@ -378,9 +440,18 @@ sub do_git_init_db {
 		command_noisy('config', "$pfx.$i", $icv{$i});
 		$set = $i;
 	}
-	my $ignore_regex = \$SVN::Git::Fetcher::_ignore_regex;
-	command_noisy('config', "$pfx.ignore-paths", $$ignore_regex)
-		if defined $$ignore_regex;
+	my $ignore_paths_regex = \$SVN::Git::Fetcher::_ignore_regex;
+	command_noisy('config', "$pfx.ignore-paths", $$ignore_paths_regex)
+		if defined $$ignore_paths_regex;
+	my $ignore_refs_regex = \$Git::SVN::Ra::_ignore_refs_regex;
+	command_noisy('config', "$pfx.ignore-refs", $$ignore_refs_regex)
+		if defined $$ignore_refs_regex;
+
+	if (defined $SVN::Git::Fetcher::_preserve_empty_dirs) {
+		my $fname = \$SVN::Git::Fetcher::_placeholder_filename;
+		command_noisy('config', "$pfx.preserve-empty-dirs", 'true');
+		command_noisy('config', "$pfx.placeholder-filename", $$fname);
+	}
 }
 
 sub init_subdir {
@@ -492,8 +563,198 @@ sub cmd_set_tree {
 	unlink $gs->{index};
 }
 
+sub split_merge_info_range {
+	my ($range) = @_;
+	if ($range =~ /(\d+)-(\d+)/) {
+		return (int($1), int($2));
+	} else {
+		return (int($range), int($range));
+	}
+}
+
+sub combine_ranges {
+	my ($in) = @_;
+
+	my @fnums = ();
+	my @arr = split(/,/, $in);
+	for my $element (@arr) {
+		my ($start, $end) = split_merge_info_range($element);
+		push @fnums, $start;
+	}
+
+	my @sorted = @arr [ sort {
+		$fnums[$a] <=> $fnums[$b]
+	} 0..$#arr ];
+
+	my @return = ();
+	my $last = -1;
+	my $first = -1;
+	for my $element (@sorted) {
+		my ($start, $end) = split_merge_info_range($element);
+
+		if ($last == -1) {
+			$first = $start;
+			$last = $end;
+			next;
+		}
+		if ($start <= $last+1) {
+			if ($end > $last) {
+				$last = $end;
+			}
+			next;
+		}
+		if ($first == $last) {
+			push @return, "$first";
+		} else {
+			push @return, "$first-$last";
+		}
+		$first = $start;
+		$last = $end;
+	}
+
+	if ($first != -1) {
+		if ($first == $last) {
+			push @return, "$first";
+		} else {
+			push @return, "$first-$last";
+		}
+	}
+
+	return join(',', @return);
+}
+
+sub merge_revs_into_hash {
+	my ($hash, $minfo) = @_;
+	my @lines = split(' ', $minfo);
+
+	for my $line (@lines) {
+		my ($branchpath, $revs) = split(/:/, $line);
+
+		if (exists($hash->{$branchpath})) {
+			# Merge the two revision sets
+			my $combined = "$hash->{$branchpath},$revs";
+			$hash->{$branchpath} = combine_ranges($combined);
+		} else {
+			# Just do range combining for consolidation
+			$hash->{$branchpath} = combine_ranges($revs);
+		}
+	}
+}
+
+sub merge_merge_info {
+	my ($mergeinfo_one, $mergeinfo_two) = @_;
+	my %result_hash = ();
+
+	merge_revs_into_hash(\%result_hash, $mergeinfo_one);
+	merge_revs_into_hash(\%result_hash, $mergeinfo_two);
+
+	my $result = '';
+	# Sort below is for consistency's sake
+	for my $branchname (sort keys(%result_hash)) {
+		my $revlist = $result_hash{$branchname};
+		$result .= "$branchname:$revlist\n"
+	}
+	return $result;
+}
+
+sub populate_merge_info {
+	my ($d, $gs, $uuid, $linear_refs, $rewritten_parent) = @_;
+
+	my %parentshash;
+	read_commit_parents(\%parentshash, $d);
+	my @parents = @{$parentshash{$d}};
+	if ($#parents > 0) {
+		# Merge commit
+		my $all_parents_ok = 1;
+		my $aggregate_mergeinfo = '';
+		my $rooturl = $gs->repos_root;
+
+		if (defined($rewritten_parent)) {
+			# Replace first parent with newly-rewritten version
+			shift @parents;
+			unshift @parents, $rewritten_parent;
+		}
+
+		foreach my $parent (@parents) {
+			my ($branchurl, $svnrev, $paruuid) =
+				cmt_metadata($parent);
+
+			unless (defined($svnrev)) {
+				# Should have been caught be preflight check
+				fatal "merge commit $d has ancestor $parent, but that change "
+                     ."does not have git-svn metadata!";
+			}
+			unless ($branchurl =~ /^\Q$rooturl\E(.*)/) {
+				fatal "commit $parent git-svn metadata changed mid-run!";
+			}
+			my $branchpath = $1;
+
+			my $ra = Git::SVN::Ra->new($branchurl);
+			my (undef, undef, $props) =
+				$ra->get_dir(canonicalize_path("."), $svnrev);
+			my $par_mergeinfo = $props->{'svn:mergeinfo'};
+			unless (defined $par_mergeinfo) {
+				$par_mergeinfo = '';
+			}
+			# Merge previous mergeinfo values
+			$aggregate_mergeinfo =
+				merge_merge_info($aggregate_mergeinfo,
+								 $par_mergeinfo, 0);
+
+			next if $parent eq $parents[0]; # Skip first parent
+			# Add new changes being placed in tree by merge
+			my @cmd = (qw/rev-list --reverse/,
+					   $parent, qw/--not/);
+			foreach my $par (@parents) {
+				unless ($par eq $parent) {
+					push @cmd, $par;
+				}
+			}
+			my @revsin = ();
+			my ($revlist, $ctx) = command_output_pipe(@cmd);
+			while (<$revlist>) {
+				my $irev = $_;
+				chomp $irev;
+				my (undef, $csvnrev, undef) =
+					cmt_metadata($irev);
+				unless (defined $csvnrev) {
+					# A child is missing SVN annotations...
+					# this might be OK, or might not be.
+					warn "W:child $irev is merged into revision "
+						 ."$d but does not have git-svn metadata. "
+						 ."This means git-svn cannot determine the "
+						 ."svn revision numbers to place into the "
+						 ."svn:mergeinfo property. You must ensure "
+						 ."a branch is entirely committed to "
+						 ."SVN before merging it in order for "
+						 ."svn:mergeinfo population to function "
+						 ."properly";
+				}
+				push @revsin, $csvnrev;
+			}
+			command_close_pipe($revlist, $ctx);
+
+			last unless $all_parents_ok;
+
+			# We now have a list of all SVN revnos which are
+			# merged by this particular parent. Integrate them.
+			next if $#revsin == -1;
+			my $newmergeinfo = "$branchpath:" . join(',', @revsin);
+			$aggregate_mergeinfo =
+				merge_merge_info($aggregate_mergeinfo,
+								 $newmergeinfo, 1);
+		}
+		if ($all_parents_ok and $aggregate_mergeinfo) {
+			return $aggregate_mergeinfo;
+		}
+	}
+
+	return undef;
+}
+
 sub cmd_dcommit {
 	my $head = shift;
+	command_noisy(qw/update-index --refresh/);
 	git_cmd_try { command_oneline(qw/diff-index --quiet HEAD/) }
 		'Cannot dcommit with a dirty index.  Commit your changes first, '
 		. "or stash them with `git stash'.\n";
@@ -525,7 +786,7 @@ sub cmd_dcommit {
 		$url = eval { command_oneline('config', '--get',
 			      "svn-remote.$gs->{repo_id}.commiturl") };
 		if (!$url) {
-			$url = $gs->full_url
+			$url = $gs->full_pushurl
 		}
 	}
 
@@ -540,8 +801,88 @@ sub cmd_dcommit {
 		     "If these changes depend on each other, re-running ",
 		     "without --no-rebase may be required."
 	}
+
+	if (defined $_interactive){
+		my $ask_default = "y";
+		foreach my $d (@$linear_refs){
+			my ($fh, $ctx) = command_output_pipe(qw(show --summary), "$d");
+			while (<$fh>){
+				print $_;
+			}
+			command_close_pipe($fh, $ctx);
+			$_ = ask("Commit this patch to SVN? ([y]es (default)|[n]o|[q]uit|[a]ll): ",
+			         valid_re => qr/^(?:yes|y|no|n|quit|q|all|a)/i,
+			         default => $ask_default);
+			die "Commit this patch reply required" unless defined $_;
+			if (/^[nq]/i) {
+				exit(0);
+			} elsif (/^a/i) {
+				last;
+			}
+		}
+	}
+
 	my $expect_url = $url;
+
+	my $push_merge_info = eval {
+		command_oneline(qw/config --get svn.pushmergeinfo/)
+		};
+	if (not defined($push_merge_info)
+			or $push_merge_info eq "false"
+			or $push_merge_info eq "no"
+			or $push_merge_info eq "never") {
+		$push_merge_info = 0;
+	}
+
+	unless (defined($_merge_info) || ! $push_merge_info) {
+		# Preflight check of changes to ensure no issues with mergeinfo
+		# This includes check for uncommitted-to-SVN parents
+		# (other than the first parent, which we will handle),
+		# information from different SVN repos, and paths
+		# which are not underneath this repository root.
+		my $rooturl = $gs->repos_root;
+		foreach my $d (@$linear_refs) {
+			my %parentshash;
+			read_commit_parents(\%parentshash, $d);
+			my @realparents = @{$parentshash{$d}};
+			if ($#realparents > 0) {
+				# Merge commit
+				shift @realparents; # Remove/ignore first parent
+				foreach my $parent (@realparents) {
+					my ($branchurl, $svnrev, $paruuid) = cmt_metadata($parent);
+					unless (defined $paruuid) {
+						# A parent is missing SVN annotations...
+						# abort the whole operation.
+						fatal "$parent is merged into revision $d, "
+							 ."but does not have git-svn metadata. "
+							 ."Either dcommit the branch or use a "
+							 ."local cherry-pick, FF merge, or rebase "
+							 ."instead of an explicit merge commit.";
+					}
+
+					unless ($paruuid eq $uuid) {
+						# Parent has SVN metadata from different repository
+						fatal "merge parent $parent for change $d has "
+							 ."git-svn uuid $paruuid, while current change "
+							 ."has uuid $uuid!";
+					}
+
+					unless ($branchurl =~ /^\Q$rooturl\E(.*)/) {
+						# This branch is very strange indeed.
+						fatal "merge parent $parent for $d is on branch "
+							 ."$branchurl, which is not under the "
+							 ."git-svn root $rooturl!";
+					}
+				}
+			}
+		}
+	}
+
+	my $rewritten_parent;
 	Git::SVN::remove_username($expect_url);
+	if (defined($_merge_info)) {
+		$_merge_info =~ tr{ }{\n};
+	}
 	while (1) {
 		my $d = shift @$linear_refs or last;
 		unless (defined $last_rev) {
@@ -555,6 +896,14 @@ sub cmd_dcommit {
 			print "diff-tree $d~1 $d\n";
 		} else {
 			my $cmt_rev;
+
+			unless (defined($_merge_info) || ! $push_merge_info) {
+				$_merge_info = populate_merge_info($d, $gs,
+				                             $uuid,
+				                             $linear_refs,
+				                             $rewritten_parent);
+			}
+
 			my %ed_opts = ( r => $last_rev,
 			                log => get_commit_entry($d)->{log},
 			                ra => Git::SVN::Ra->new($url),
@@ -567,6 +916,7 @@ sub cmd_dcommit {
 			                       print "Committed r$_[0]\n";
 			                       $cmt_rev = $_[0];
 			                },
+					mergeinfo => $_merge_info,
 			                svn_path => '');
 			if (!SVN::Git::Editor->new(\%ed_opts)->apply_diff) {
 				print "No changes\n$d~1 == $d\n";
@@ -596,6 +946,9 @@ sub cmd_dcommit {
 				@finish = qw/reset --mixed/;
 			}
 			command_noisy(@finish, $gs->refname);
+
+			$rewritten_parent = command_oneline(qw/rev-parse HEAD/);
+
 			if (@diff) {
 				@refs = ();
 				my ($url_, $rev_, $uuid_, $gs_) =
@@ -672,7 +1025,7 @@ sub cmd_branch {
 	$head ||= 'HEAD';
 
 	my (undef, $rev, undef, $gs) = working_head_info($head);
-	my $src = $gs->full_url;
+	my $src = $gs->full_pushurl;
 
 	my $remote = Git::SVN::read_all_remotes()->{$gs->{repo_id}};
 	my $allglobs = $remote->{ $_tag ? 'tags' : 'branches' };
@@ -723,7 +1076,7 @@ sub cmd_branch {
 		$url = eval { command_oneline('config', '--get',
 			"svn-remote.$gs->{repo_id}.commiturl") };
 		if (!$url) {
-			$url = $remote->{url};
+			$url = $remote->{pushurl} || $remote->{url};
 		}
 	}
 	my $dst = join '/', $url, $lft, $branch_name, ($rgt || ());
@@ -777,6 +1130,15 @@ sub cmd_find_rev {
 	print "$result\n" if $result;
 }
 
+sub auto_create_empty_directories {
+	my ($gs) = @_;
+	my $var = eval { command_oneline('config', '--get', '--bool',
+					 "svn-remote.$gs->{repo_id}.automkdirs") };
+	# By default, create empty directories by consulting the unhandled log,
+	# but allow setting it to 'false' to skip it.
+	return !($var && $var eq 'false');
+}
+
 sub cmd_rebase {
 	command_noisy(qw/update-index --refresh/);
 	my ($url, $rev, $uuid, $gs) = working_head_info('HEAD');
@@ -800,7 +1162,9 @@ sub cmd_rebase {
 		$_fetch_all ? $gs->fetch_all : $gs->fetch;
 	}
 	command_noisy(rebase_cmd(), $gs->refname);
-	$gs->mkemptydirs;
+	if (auto_create_empty_directories($gs)) {
+		$gs->mkemptydirs;
+	}
 }
 
 sub cmd_show_ignore {
@@ -1238,7 +1602,9 @@ sub post_fetch_checkout {
 	command_noisy(qw/read-tree -m -u -v HEAD HEAD/);
 	print STDERR "Checked out HEAD:\n  ",
 	             $gs->full_url, " r", $gs->last_rev, "\n";
-	$gs->mkemptydirs($gs->last_rev);
+	if (auto_create_empty_directories($gs)) {
+		$gs->mkemptydirs($gs->last_rev);
+	}
 }
 
 sub complete_svn_url {
@@ -1512,7 +1878,7 @@ sub cmt_sha2rev_batch {
 
 sub working_head_info {
 	my ($head, $refs) = @_;
-	my @args = ('log', '--no-color', '--first-parent', '--pretty=medium');
+	my @args = qw/rev-list --first-parent --pretty=medium/;
 	my ($fh, $ctx) = command_output_pipe(@args, $head);
 	my $hash;
 	my %max;
@@ -1662,6 +2028,7 @@ use Carp qw/croak/;
 use File::Path qw/mkpath/;
 use File::Copy qw/copy/;
 use IPC::Open3;
+use Time::Local;
 use Memoize;  # core since 5.8.0, Jul 2002
 use Memoize::Storable;
 
@@ -1819,18 +2186,24 @@ sub read_all_remotes {
 			die("svn-remote.$remote: remote ref '$remote_ref' "
 			    . "must start with 'refs/'\n")
 				unless $remote_ref =~ m{^refs/};
+			$local_ref = uri_decode($local_ref);
 			$r->{$remote}->{fetch}->{$local_ref} = $remote_ref;
 			$r->{$remote}->{svm} = {} if $use_svm_props;
 		} elsif (m!^(.+)\.usesvmprops=\s*(.*)\s*$!) {
 			$r->{$1}->{svm} = {};
 		} elsif (m!^(.+)\.url=\s*(.*)\s*$!) {
 			$r->{$1}->{url} = $2;
+		} elsif (m!^(.+)\.pushurl=\s*(.*)\s*$!) {
+			$r->{$1}->{pushurl} = $2;
+		} elsif (m!^(.+)\.ignore-refs=\s*(.*)\s*$!) {
+			$r->{$1}->{ignore_refs_regex} = $2;
 		} elsif (m!^(.+)\.(branches|tags)=$svn_refspec$!) {
 			my ($remote, $t, $local_ref, $remote_ref) =
 			                                     ($1, $2, $3, $4);
 			die("svn-remote.$remote: remote ref '$remote_ref' ($t) "
 			    . "must start with 'refs/'\n")
 				unless $remote_ref =~ m{^refs/};
+			$local_ref = uri_decode($local_ref);
 			my $rs = {
 			    t => $t,
 			    remote => $remote,
@@ -1859,6 +2232,16 @@ sub read_all_remotes {
 			$r->{$_}->{svm} = $svm;
 		}
 	} keys %$r;
+
+	foreach my $remote (keys %$r) {
+		foreach ( grep { defined $_ }
+			  map { $r->{$remote}->{$_} } qw(branches tags) ) {
+			foreach my $rs ( @$_ ) {
+				$rs->{ignore_refs_regex} =
+				    $r->{$remote}->{ignore_refs_regex};
+			}
+		}
+	}
 
 	$r;
 }
@@ -2061,6 +2444,8 @@ sub new {
 	$self->{url} = command_oneline('config', '--get',
 	                               "svn-remote.$repo_id.url") or
                   die "Failed to read \"svn-remote.$repo_id.url\" in config\n";
+	$self->{pushurl} = eval { command_oneline('config', '--get',
+	                          "svn-remote.$repo_id.pushurl") };
 	$self->rebuild;
 	$self;
 }
@@ -2538,6 +2923,15 @@ sub full_url {
 	$self->{url} . (length $self->{path} ? '/' . $self->{path} : '');
 }
 
+sub full_pushurl {
+	my ($self) = @_;
+	if ($self->{pushurl}) {
+		return $self->{pushurl} . (length $self->{path} ? '/' .
+		       $self->{path} : '');
+	} else {
+		return $self->full_url;
+	}
+}
 
 sub set_commit_header_env {
 	my ($log_entry) = @_;
@@ -2893,6 +3287,14 @@ sub get_untracked {
 	\@out;
 }
 
+sub get_tz {
+	# some systmes don't handle or mishandle %z, so be creative.
+	my $t = shift || time;
+	my $gm = timelocal(gmtime($t));
+	my $sign = qw( + + - )[ $t <=> $gm ];
+	return sprintf("%s%02d%02d", $sign, (gmtime(abs($t - $gm)))[2,1]);
+}
+
 # parse_svn_date(DATE)
 # --------------------
 # Given a date (in UTC) from Subversion, return a string in the format
@@ -2925,8 +3327,7 @@ sub parse_svn_date {
 			delete $ENV{TZ};
 		}
 
-		my $our_TZ =
-		    POSIX::strftime('%Z', $S, $M, $H, $d, $m - 1, $Y - 1900);
+		my $our_TZ = get_tz();
 
 		# This converts $epoch_in_UTC into our local timezone.
 		my ($sec, $min, $hour, $mday, $mon, $year,
@@ -2956,18 +3357,29 @@ sub other_gs {
 	my $gs = Git::SVN->find_by_url($new_url, $url, $branch_from);
 	unless ($gs) {
 		my $ref_id = $old_ref_id;
-		$ref_id =~ s/\@\d+$//;
+		$ref_id =~ s/\@\d+-*$//;
 		$ref_id .= "\@$r";
 		# just grow a tail if we're not unique enough :x
 		$ref_id .= '-' while find_ref($ref_id);
-		print STDERR "Initializing parent: $ref_id\n" unless $::_q > 1;
 		my ($u, $p, $repo_id) = ($new_url, '', $ref_id);
 		if ($u =~ s#^\Q$url\E(/|$)##) {
 			$p = $u;
 			$u = $url;
 			$repo_id = $self->{repo_id};
 		}
-		$gs = Git::SVN->init($u, $p, $repo_id, $ref_id, 1);
+		while (1) {
+			# It is possible to tag two different subdirectories at
+			# the same revision.  If the url for an existing ref
+			# does not match, we must either find a ref with a
+			# matching url or create a new ref by growing a tail.
+			$gs = Git::SVN->init($u, $p, $repo_id, $ref_id, 1);
+			my (undef, $max_commit) = $gs->rev_map_max(1);
+			last if (!$max_commit);
+			my ($url) = ::cmt_metadata($max_commit);
+			last if ($url eq $gs->metadata_url);
+			$ref_id .= '-';
+		}
+		print STDERR "Initializing parent: $ref_id\n" unless $::_q > 1;
 	}
 	$gs
 }
@@ -3077,8 +3489,12 @@ sub lookup_svn_merge {
 			next;
 		}
 
-		push @merged_commit_ranges,
-			"$bottom_commit^..$top_commit";
+		if (scalar(command('rev-parse', "$bottom_commit^@"))) {
+			push @merged_commit_ranges,
+			     "$bottom_commit^..$top_commit";
+		} else {
+			push @merged_commit_ranges, "$top_commit";
+		}
 
 		if ( !defined $tip or $top > $tip ) {
 			$tip = $top;
@@ -3104,11 +3520,12 @@ sub _rev_list {
 sub check_cherry_pick {
 	my $base = shift;
 	my $tip = shift;
+	my $parents = shift;
 	my @ranges = @_;
 	my %commits = map { $_ => 1 }
-		_rev_list("--no-merges", $tip, "--not", $base);
+		_rev_list("--no-merges", $tip, "--not", $base, @$parents, "--");
 	for my $range ( @ranges ) {
-		delete @commits{_rev_list($range)};
+		delete @commits{_rev_list($range, "--")};
 	}
 	for my $commit (keys %commits) {
 		if (has_no_changes($commit)) {
@@ -3178,6 +3595,8 @@ sub has_no_changes {
 		Memoize::unmemoize 'check_cherry_pick';
 		Memoize::unmemoize 'has_no_changes';
 	}
+
+	Memoize::memoize 'Git::SVN::repos_root';
 }
 
 END {
@@ -3282,6 +3701,7 @@ sub find_extra_svn_parents {
 		# double check that there are no missing non-merge commits
 		my (@incomplete) = check_cherry_pick(
 			$merge_base, $merge_tip,
+			$parents,
 			@$ranges,
 		       );
 
@@ -3507,7 +3927,7 @@ sub rebuild {
 	my ($base_rev, $head) = ($partial ? $self->rev_map_max_norebuild(1) :
 		(undef, undef));
 	my ($log, $ctx) =
-	    command_output_pipe(qw/rev-list --pretty=raw --no-color --reverse/,
+	    command_output_pipe(qw/rev-list --pretty=raw --reverse/,
 				($head ? "$head.." : "") . $self->refname,
 				'--');
 	my $metadata_url = $self->metadata_url;
@@ -4025,12 +4445,13 @@ sub _read_password {
 }
 
 package SVN::Git::Fetcher;
-use vars qw/@ISA/;
+use vars qw/@ISA $_ignore_regex $_preserve_empty_dirs $_placeholder_filename
+            @deleted_gpath %added_placeholder $repo_id/;
 use strict;
 use warnings;
 use Carp qw/croak/;
+use File::Basename qw/dirname/;
 use IO::File qw//;
-use vars qw/$_ignore_regex/;
 
 # file baton members: path, mode_a, mode_b, pool, fh, blob, base
 sub new {
@@ -4042,14 +4463,41 @@ sub new {
 		$self->{empty_symlinks} =
 		                  _mark_empty_symlinks($git_svn, $switch_path);
 	}
-	$self->{ignore_regex} = eval { command_oneline('config', '--get',
-			     "svn-remote.$git_svn->{repo_id}.ignore-paths") };
+
+	# some options are read globally, but can be overridden locally
+	# per [svn-remote "..."] section.  Command-line options will *NOT*
+	# override options set in an [svn-remote "..."] section
+	$repo_id = $git_svn->{repo_id};
+	my $k = "svn-remote.$repo_id.ignore-paths";
+	my $v = eval { command_oneline('config', '--get', $k) };
+	$self->{ignore_regex} = $v;
+
+	$k = "svn-remote.$repo_id.preserve-empty-dirs";
+	$v = eval { command_oneline('config', '--get', '--bool', $k) };
+	if ($v && $v eq 'true') {
+		$_preserve_empty_dirs = 1;
+		$k = "svn-remote.$repo_id.placeholder-filename";
+		$v = eval { command_oneline('config', '--get', $k) };
+		$_placeholder_filename = $v;
+	}
+
+	# Load the list of placeholder files added during previous invocations.
+	$k = "svn-remote.$repo_id.added-placeholder";
+	$v = eval { command_oneline('config', '--get-all', $k) };
+	if ($_preserve_empty_dirs && $v) {
+		# command() prints errors to stderr, so we only call it if
+		# command_oneline() succeeded.
+		my @v = command('config', '--get-all', $k);
+		$added_placeholder{ dirname($_) } = $_ foreach @v;
+	}
+
 	$self->{empty} = {};
 	$self->{dir_prop} = {};
 	$self->{file_prop} = {};
 	$self->{absent_dir} = {};
 	$self->{absent_file} = {};
 	$self->{gii} = $git_svn->tmp_index_do(sub { Git::IndexInfo->new });
+	$self->{pathnameencoding} = Git::config('svn.pathnameencoding');
 	$self;
 }
 
@@ -4133,6 +4581,10 @@ sub open_directory {
 
 sub git_path {
 	my ($self, $path) = @_;
+	if (my $enc = $self->{pathnameencoding}) {
+		require Encode;
+		Encode::from_to($path, 'UTF-8', $enc);
+	}
 	if ($self->{path_strip}) {
 		$path =~ s!$self->{path_strip}!! or
 		  die "Failed to strip path '$path' ($self->{path_strip})\n";
@@ -4167,6 +4619,8 @@ sub delete_entry {
 		$self->{gii}->remove($gpath);
 		print "\tD\t$gpath\n" unless $::_q;
 	}
+	# Don't add to @deleted_gpath if we're deleting a placeholder file.
+	push @deleted_gpath, $gpath unless $added_placeholder{dirname($path)};
 	$self->{empty}->{$path} = 0;
 	undef;
 }
@@ -4199,7 +4653,15 @@ sub add_file {
 		my ($dir, $file) = ($path =~ m#^(.*?)/?([^/]+)$#);
 		delete $self->{empty}->{$dir};
 		$mode = '100644';
+
+		if ($added_placeholder{$dir}) {
+			# Remove our placeholder file, if we created one.
+			delete_entry($self, $added_placeholder{$dir})
+				unless $path eq $added_placeholder{$dir};
+			delete $added_placeholder{$dir}
+		}
 	}
+
 	{ path => $path, mode_a => $mode, mode_b => $mode,
 	  pool => SVN::Pool->new, action => 'A' };
 }
@@ -4217,6 +4679,7 @@ sub add_directory {
 			chomp;
 			$self->{gii}->remove($_);
 			print "\tD\t$_\n" unless $::_q;
+			push @deleted_gpath, $gpath;
 		}
 		command_close_pipe($ls, $ctx);
 		$self->{empty}->{$path} = 0;
@@ -4224,6 +4687,13 @@ sub add_directory {
 	my ($dir, $file) = ($path =~ m#^(.*?)/?([^/]+)$#);
 	delete $self->{empty}->{$dir};
 	$self->{empty}->{$path} = 1;
+
+	if ($added_placeholder{$dir}) {
+		# Remove our placeholder file, if we created one.
+		delete_entry($self, $added_placeholder{$dir});
+		delete $added_placeholder{$dir}
+	}
+
 out:
 	{ path => $path };
 }
@@ -4387,10 +4857,94 @@ sub abort_edit {
 
 sub close_edit {
 	my $self = shift;
+
+	if ($_preserve_empty_dirs) {
+		my @empty_dirs;
+
+		# Any entry flagged as empty that also has an associated
+		# dir_prop represents a newly created empty directory.
+		foreach my $i (keys %{$self->{empty}}) {
+			push @empty_dirs, $i if exists $self->{dir_prop}->{$i};
+		}
+
+		# Search for directories that have become empty due subsequent
+		# file deletes.
+		push @empty_dirs, $self->find_empty_directories();
+
+		# Finally, add a placeholder file to each empty directory.
+		$self->add_placeholder_file($_) foreach (@empty_dirs);
+
+		$self->stash_placeholder_list();
+	}
+
 	$self->{git_commit_ok} = 1;
 	$self->{nr} = $self->{gii}->{nr};
 	delete $self->{gii};
 	$self->SUPER::close_edit(@_);
+}
+
+sub find_empty_directories {
+	my ($self) = @_;
+	my @empty_dirs;
+	my %dirs = map { dirname($_) => 1 } @deleted_gpath;
+
+	foreach my $dir (sort keys %dirs) {
+		next if $dir eq ".";
+
+		# If there have been any additions to this directory, there is
+		# no reason to check if it is empty.
+		my $skip_added = 0;
+		foreach my $t (qw/dir_prop file_prop/) {
+			foreach my $path (keys %{ $self->{$t} }) {
+				if (exists $self->{$t}->{dirname($path)}) {
+					$skip_added = 1;
+					last;
+				}
+			}
+			last if $skip_added;
+		}
+		next if $skip_added;
+
+		# Use `git ls-tree` to get the filenames of this directory
+		# that existed prior to this particular commit.
+		my $ls = command('ls-tree', '-z', '--name-only',
+				 $self->{c}, "$dir/");
+		my %files = map { $_ => 1 } split(/\0/, $ls);
+
+		# Remove the filenames that were deleted during this commit.
+		delete $files{$_} foreach (@deleted_gpath);
+
+		# Report the directory if there are no filenames left.
+		push @empty_dirs, $dir unless (scalar %files);
+	}
+	@empty_dirs;
+}
+
+sub add_placeholder_file {
+	my ($self, $dir) = @_;
+	my $path = "$dir/$_placeholder_filename";
+	my $gpath = $self->git_path($path);
+
+	my $fh = $::_repository->temp_acquire($gpath);
+	my $hash = $::_repository->hash_and_insert_object(Git::temp_path($fh));
+	Git::temp_release($fh, 1);
+	$self->{gii}->update('100644', $hash, $gpath) or croak $!;
+
+	# The directory should no longer be considered empty.
+	delete $self->{empty}->{$dir} if exists $self->{empty}->{$dir};
+
+	# Keep track of any placeholder files we create.
+	$added_placeholder{$dir} = $path;
+}
+
+sub stash_placeholder_list {
+	my ($self) = @_;
+	my $k = "svn-remote.$repo_id.added-placeholder";
+	my $v = eval { command_oneline('config', '--get-all', $k) };
+	command_noisy('config', '--unset-all', $k) if $v;
+	foreach (values %added_placeholder) {
+		command_noisy('config', '--add', $k, $_);
+	}
 }
 
 package SVN::Git::Editor;
@@ -4428,6 +4982,7 @@ sub new {
 	$self->{path_prefix} = length $self->{svn_path} ?
 	                       "$self->{svn_path}/" : '';
 	$self->{config} = $opts->{config};
+	$self->{mergeinfo} = $opts->{mergeinfo};
 	return $self;
 }
 
@@ -4521,6 +5076,10 @@ sub split_path {
 
 sub repo_path {
 	my ($self, $path) = @_;
+	if (my $enc = $self->{pathnameencoding}) {
+		require Encode;
+		Encode::from_to($path, $enc, 'UTF-8');
+	}
 	$self->{path_prefix}.(defined $path ? $path : '');
 }
 
@@ -4578,7 +5137,7 @@ sub rmdirs {
 }
 
 sub open_or_add_dir {
-	my ($self, $full_path, $baton) = @_;
+	my ($self, $full_path, $baton, $deletions) = @_;
 	my $t = $self->{types}->{$full_path};
 	if (!defined $t) {
 		die "$full_path not known in r$self->{r} or we have a bug!\n";
@@ -4587,7 +5146,7 @@ sub open_or_add_dir {
 		no warnings 'once';
 		# SVN::Node::none and SVN::Node::file are used only once,
 		# so we're shutting up Perl's warnings about them.
-		if ($t == $SVN::Node::none) {
+		if ($t == $SVN::Node::none || defined($deletions->{$full_path})) {
 			return $self->add_directory($full_path, $baton,
 			    undef, -1, $self->{pool});
 		} elsif ($t == $SVN::Node::dir) {
@@ -4602,17 +5161,18 @@ sub open_or_add_dir {
 }
 
 sub ensure_path {
-	my ($self, $path) = @_;
+	my ($self, $path, $deletions) = @_;
 	my $bat = $self->{bat};
 	my $repo_path = $self->repo_path($path);
 	return $bat->{''} unless (length $repo_path);
+
 	my @p = split m#/+#, $repo_path;
 	my $c = shift @p;
-	$bat->{$c} ||= $self->open_or_add_dir($c, $bat->{''});
+	$bat->{$c} ||= $self->open_or_add_dir($c, $bat->{''}, $deletions);
 	while (@p) {
 		my $c0 = $c;
 		$c .= '/' . shift @p;
-		$bat->{$c} ||= $self->open_or_add_dir($c, $bat->{$c0});
+		$bat->{$c} ||= $self->open_or_add_dir($c, $bat->{$c0}, $deletions);
 	}
 	return $bat->{$c};
 }
@@ -4669,9 +5229,9 @@ sub apply_autoprops {
 }
 
 sub A {
-	my ($self, $m) = @_;
+	my ($self, $m, $deletions) = @_;
 	my ($dir, $file) = split_path($m->{file_b});
-	my $pbat = $self->ensure_path($dir);
+	my $pbat = $self->ensure_path($dir, $deletions);
 	my $fbat = $self->add_file($self->repo_path($m->{file_b}), $pbat,
 					undef, -1);
 	print "\tA\t$m->{file_b}\n" unless $::_q;
@@ -4681,9 +5241,9 @@ sub A {
 }
 
 sub C {
-	my ($self, $m) = @_;
+	my ($self, $m, $deletions) = @_;
 	my ($dir, $file) = split_path($m->{file_b});
-	my $pbat = $self->ensure_path($dir);
+	my $pbat = $self->ensure_path($dir, $deletions);
 	my $fbat = $self->add_file($self->repo_path($m->{file_b}), $pbat,
 				$self->url_path($m->{file_a}), $self->{r});
 	print "\tC\t$m->{file_a} => $m->{file_b}\n" unless $::_q;
@@ -4700,9 +5260,9 @@ sub delete_entry {
 }
 
 sub R {
-	my ($self, $m) = @_;
+	my ($self, $m, $deletions) = @_;
 	my ($dir, $file) = split_path($m->{file_b});
-	my $pbat = $self->ensure_path($dir);
+	my $pbat = $self->ensure_path($dir, $deletions);
 	my $fbat = $self->add_file($self->repo_path($m->{file_b}), $pbat,
 				$self->url_path($m->{file_a}), $self->{r});
 	print "\tR\t$m->{file_a} => $m->{file_b}\n" unless $::_q;
@@ -4711,14 +5271,14 @@ sub R {
 	$self->close_file($fbat,undef,$self->{pool});
 
 	($dir, $file) = split_path($m->{file_a});
-	$pbat = $self->ensure_path($dir);
+	$pbat = $self->ensure_path($dir, $deletions);
 	$self->delete_entry($m->{file_a}, $pbat);
 }
 
 sub M {
-	my ($self, $m) = @_;
+	my ($self, $m, $deletions) = @_;
 	my ($dir, $file) = split_path($m->{file_b});
-	my $pbat = $self->ensure_path($dir);
+	my $pbat = $self->ensure_path($dir, $deletions);
 	my $fbat = $self->open_file($self->repo_path($m->{file_b}),
 				$pbat,$self->{r},$self->{pool});
 	print "\t$m->{chg}\t$m->{file_b}\n" unless $::_q;
@@ -4731,6 +5291,11 @@ sub T { shift->M(@_) }
 sub change_file_prop {
 	my ($self, $fbat, $pname, $pval) = @_;
 	$self->SUPER::change_file_prop($fbat, $pname, $pval, $self->{pool});
+}
+
+sub change_dir_prop {
+	my ($self, $pbat, $pname, $pval) = @_;
+	$self->SUPER::change_dir_prop($pbat, $pname, $pval, $self->{pool});
 }
 
 sub _chg_file_get_blob ($$$$) {
@@ -4783,9 +5348,9 @@ sub chg_file {
 }
 
 sub D {
-	my ($self, $m) = @_;
+	my ($self, $m, $deletions) = @_;
 	my ($dir, $file) = split_path($m->{file_b});
-	my $pbat = $self->ensure_path($dir);
+	my $pbat = $self->ensure_path($dir, $deletions);
 	print "\tD\t$m->{file_b}\n" unless $::_q;
 	$self->delete_entry($m->{file_b}, $pbat);
 }
@@ -4817,17 +5382,30 @@ sub DESTROY {
 sub apply_diff {
 	my ($self) = @_;
 	my $mods = $self->{mods};
-	my %o = ( D => 1, R => 0, C => -1, A => 3, M => 3, T => 3 );
+	my %o = ( D => 0, C => 1, R => 2, A => 3, M => 4, T => 5 );
+	my %deletions;
+
+	foreach my $m (@$mods) {
+		if ($m->{chg} eq "D") {
+			$deletions{$m->{file_b}} = 1;
+		}
+	}
+
 	foreach my $m (sort { $o{$a->{chg}} <=> $o{$b->{chg}} } @$mods) {
 		my $f = $m->{chg};
 		if (defined $o{$f}) {
-			$self->$f($m);
+			$self->$f($m, \%deletions);
 		} else {
 			fatal("Invalid change type: $f");
 		}
 	}
+
+	if (defined($self->{mergeinfo})) {
+		$self->change_dir_prop($self->{bat}{''}, "svn:mergeinfo",
+			               $self->{mergeinfo});
+	}
 	$self->rmdirs if $_rmdir;
-	if (@$mods == 0) {
+	if (@$mods == 0 && !defined($self->{mergeinfo})) {
 		$self->abort_edit;
 	} else {
 		$self->close_edit;
@@ -4836,7 +5414,7 @@ sub apply_diff {
 }
 
 package Git::SVN::Ra;
-use vars qw/@ISA $config_dir $_log_window_size/;
+use vars qw/@ISA $config_dir $_ignore_refs_regex $_log_window_size/;
 use strict;
 use warnings;
 my ($ra_invalid, $can_do_switch, %ignored_err, $RA);
@@ -5294,6 +5872,17 @@ sub get_dir_globbed {
 	@finalents;
 }
 
+# return value: 0 -- don't ignore, 1 -- ignore
+sub is_ref_ignored {
+	my ($g, $p) = @_;
+	my $refname = $g->{ref}->full_path($p);
+	return 1 if defined($g->{ignore_refs_regex}) &&
+	            $refname =~ m!$g->{ignore_refs_regex}!;
+	return 0 unless defined($_ignore_refs_regex);
+	return 1 if $refname =~ m!$_ignore_refs_regex!o;
+	return 0;
+}
+
 sub match_globs {
 	my ($self, $exists, $paths, $globs, $r) = @_;
 
@@ -5330,6 +5919,7 @@ sub match_globs {
 			next unless /$g->{path}->{regex}/;
 			my $p = $1;
 			my $pathname = $g->{path}->full_path($p);
+			next if is_ref_ignored($g, $p);
 			next if $exists->{$pathname};
 			next if ($self->check_path($pathname, $r) !=
 			         $SVN::Node::dir);
@@ -5420,7 +6010,6 @@ package Git::SVN::Log;
 use strict;
 use warnings;
 use POSIX qw/strftime/;
-use Time::Local;
 use constant commit_log_separator => ('-' x 72) . "\n";
 use vars qw/$TZ $limit $color $pager $non_recursive $verbose $oneline
             %rusers $show_commit $incremental/;
@@ -5530,11 +6119,8 @@ sub run_pager {
 }
 
 sub format_svn_date {
-	# some systmes don't handle or mishandle %z, so be creative.
 	my $t = shift || time;
-	my $gm = timelocal(gmtime($t));
-	my $sign = qw( + + - )[ $t <=> $gm ];
-	my $gmoff = sprintf("%s%02d%02d", $sign, (gmtime(abs($t - $gm)))[2,1]);
+	my $gmoff = Git::SVN::get_tz($t);
 	return strftime("%Y-%m-%d %H:%M:%S $gmoff (%a, %d %b %Y)", localtime($t));
 }
 
@@ -5694,7 +6280,7 @@ sub cmd_show_log {
 	my (@k, $c, $d, $stat);
 	my $esc_color = qr/(?:\033\[(?:(?:\d+;)*\d*)?m)*/;
 	while (<$log>) {
-		if (/^${esc_color}commit -?($::sha1_short)/o) {
+		if (/^${esc_color}commit (?:- )?($::sha1_short)/o) {
 			my $cmt = $1;
 			if ($c && cmt_showable($c) && $c->{r} != $r_last) {
 				$r_last = $c->{r};

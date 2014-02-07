@@ -11,9 +11,18 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	if (argc >= 2 && !strcmp(argv[1], "make_absolute_path")) {
+	if (argc >= 2 && !strcmp(argv[1], "real_path")) {
 		while (argc > 2) {
-			puts(make_absolute_path(argv[2]));
+			puts(real_path(argv[2]));
+			argc--;
+			argv++;
+		}
+		return 0;
+	}
+
+	if (argc >= 2 && !strcmp(argv[1], "absolute_path")) {
+		while (argc > 2) {
+			puts(absolute_path(argv[2]));
 			argc--;
 			argv++;
 		}
@@ -23,6 +32,19 @@ int main(int argc, char **argv)
 	if (argc == 4 && !strcmp(argv[1], "longest_ancestor_length")) {
 		int len = longest_ancestor_length(argv[2], argv[3]);
 		printf("%d\n", len);
+		return 0;
+	}
+
+	if (argc >= 4 && !strcmp(argv[1], "prefix_path")) {
+		char *prefix = argv[2];
+		int prefix_len = strlen(prefix);
+		int nongit_ok;
+		setup_git_directory_gently(&nongit_ok);
+		while (argc > 3) {
+			puts(prefix_path(prefix, prefix_len, argv[3]));
+			argc--;
+			argv++;
+		}
 		return 0;
 	}
 

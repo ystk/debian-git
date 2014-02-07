@@ -11,6 +11,7 @@
 #include "fsck.h"
 #include "parse-options.h"
 #include "dir.h"
+#include "progress.h"
 
 #define REACHABLE 0x0001
 #define SEEN      0x0002
@@ -27,8 +28,11 @@ static const char *head_points_at;
 static int errors_found;
 static int write_lost_and_found;
 static int verbose;
+static int show_progress = -1;
+static int show_dangling = 1;
 #define ERROR_OBJECT 01
 #define ERROR_REACHABLE 02
+#define ERROR_PACK 04
 
 #ifdef NO_D_INO_IN_DIRENT
 #define SORT_DIRENT 0
@@ -74,7 +78,13 @@ static int mark_object(struct object *obj, int type, void *data)
 {
 	struct object *parent = data;
 
+	/*
+	 * The only case data is NULL or type is OBJ_ANY is when
+	 * mark_object_reachable() calls us.  All the callers of
+	 * that function has non-NULL obj hence ...
+	 */
 	if (!obj) {
+		/* ... these references to parent->fld are safe here */
 		printf("broken link from %7s %s\n",
 			   typename(parent->type), sha1_to_hex(parent->sha1));
 		printf("broken link from %7s %s\n",
@@ -84,6 +94,7 @@ static int mark_object(struct object *obj, int type, void *data)
 	}
 
 	if (type != OBJ_ANY && obj->type != type)
+		/* ... and the reference to parent is safe here */
 		objerror(parent, "wrong object type in link");
 
 	if (obj->flags & REACHABLE)
@@ -109,7 +120,7 @@ static void mark_object_reachable(struct object *obj)
 	mark_object(obj, OBJ_ANY, NULL);
 }
 
-static int traverse_one_object(struct object *obj, struct object *parent)
+static int traverse_one_object(struct object *obj)
 {
 	int result;
 	struct tree *tree = NULL;
@@ -130,16 +141,21 @@ static int traverse_one_object(struct object *obj, struct object *parent)
 
 static int traverse_reachable(void)
 {
+	struct progress *progress = NULL;
+	unsigned int nr = 0;
 	int result = 0;
+	if (show_progress)
+		progress = start_progress_delay("Checking connectivity", 0, 0, 2);
 	while (pending.nr) {
 		struct object_array_entry *entry;
-		struct object *obj, *parent;
+		struct object *obj;
 
 		entry = pending.objects + --pending.nr;
 		obj = entry->item;
-		parent = (struct object *) entry->name;
-		result |= traverse_one_object(obj, parent);
+		result |= traverse_one_object(obj);
+		display_progress(progress, ++nr);
 	}
+	stop_progress(&progress);
 	return !!result;
 }
 
@@ -206,8 +222,9 @@ static void check_unreachable_object(struct object *obj)
 	 * start looking at, for example.
 	 */
 	if (!obj->used) {
-		printf("dangling %s %s\n", typename(obj->type),
-		       sha1_to_hex(obj->sha1));
+		if (show_dangling)
+			printf("dangling %s %s\n", typename(obj->type),
+			       sha1_to_hex(obj->sha1));
 		if (write_lost_and_found) {
 			char *filename = git_path("lost-found/%s/%s",
 				obj->type == OBJ_COMMIT ? "commit" : "other",
@@ -225,12 +242,9 @@ static void check_unreachable_object(struct object *obj)
 				unsigned long size;
 				char *buf = read_sha1_file(obj->sha1,
 						&type, &size);
-				if (buf) {
-					if (fwrite(buf, size, 1, f) != 1)
-						die_errno("Could not write '%s'",
-							  filename);
-					free(buf);
-				}
+				if (buf && fwrite(buf, 1, size, f) != size)
+					die_errno("Could not write '%s'", filename);
+				free(buf);
 			} else
 				fprintf(f, "%s\n", sha1_to_hex(obj->sha1));
 			if (fclose(f))
@@ -278,14 +292,8 @@ static void check_connectivity(void)
 	}
 }
 
-static int fsck_sha1(const unsigned char *sha1)
+static int fsck_obj(struct object *obj)
 {
-	struct object *obj = parse_object(sha1);
-	if (!obj) {
-		errors_found |= ERROR_OBJECT;
-		return error("%s: object corrupt or missing",
-			     sha1_to_hex(sha1));
-	}
 	if (obj->flags & SEEN)
 		return 0;
 	obj->flags |= SEEN;
@@ -326,6 +334,29 @@ static int fsck_sha1(const unsigned char *sha1)
 	}
 
 	return 0;
+}
+
+static int fsck_sha1(const unsigned char *sha1)
+{
+	struct object *obj = parse_object(sha1);
+	if (!obj) {
+		errors_found |= ERROR_OBJECT;
+		return error("%s: object corrupt or missing",
+			     sha1_to_hex(sha1));
+	}
+	return fsck_obj(obj);
+}
+
+static int fsck_obj_buffer(const unsigned char *sha1, enum object_type type,
+			   unsigned long size, void *buffer, int *eaten)
+{
+	struct object *obj;
+	obj = parse_object_buffer(sha1, type, size, buffer, eaten);
+	if (!obj) {
+		errors_found |= ERROR_OBJECT;
+		return error("%s: object corrupt or missing", sha1_to_hex(sha1));
+	}
+	return fsck_obj(obj);
 }
 
 /*
@@ -385,10 +416,20 @@ static void add_sha1_list(unsigned char *sha1, unsigned long ino)
 	sha1_list.nr = ++nr;
 }
 
+static inline int is_loose_object_file(struct dirent *de,
+				       char *name, unsigned char *sha1)
+{
+	if (strlen(de->d_name) != 38)
+		return 0;
+	memcpy(name + 2, de->d_name, 39);
+	return !get_sha1_hex(name, sha1);
+}
+
 static void fsck_dir(int i, char *path)
 {
 	DIR *dir = opendir(path);
 	struct dirent *de;
+	char name[100];
 
 	if (!dir)
 		return;
@@ -396,17 +437,13 @@ static void fsck_dir(int i, char *path)
 	if (verbose)
 		fprintf(stderr, "Checking directory %s\n", path);
 
+	sprintf(name, "%02x", i);
 	while ((de = readdir(dir)) != NULL) {
-		char name[100];
 		unsigned char sha1[20];
 
 		if (is_dot_or_dotdot(de->d_name))
 			continue;
-		if (strlen(de->d_name) == 38) {
-			sprintf(name, "%02x", i);
-			memcpy(name+2, de->d_name, 39);
-			if (get_sha1_hex(name, sha1) < 0)
-				break;
+		if (is_loose_object_file(de, name, sha1)) {
 			add_sha1_list(sha1, DIRENT_SORT_HINT(de));
 			continue;
 		}
@@ -503,15 +540,20 @@ static void get_default_heads(void)
 static void fsck_object_dir(const char *path)
 {
 	int i;
+	struct progress *progress = NULL;
 
 	if (verbose)
 		fprintf(stderr, "Checking object directory\n");
 
+	if (show_progress)
+		progress = start_progress("Checking object directories", 256);
 	for (i = 0; i < 256; i++) {
 		static char dir[4096];
 		sprintf(dir, "%s/%02x", path, i);
 		fsck_dir(i, dir);
+		display_progress(progress, i+1);
 	}
+	stop_progress(&progress);
 	fsck_sha1_list();
 }
 
@@ -523,7 +565,7 @@ static int fsck_head_link(void)
 	if (verbose)
 		fprintf(stderr, "Checking HEAD link\n");
 
-	head_points_at = resolve_ref("HEAD", head_sha1, 0, &flag);
+	head_points_at = resolve_ref_unsafe("HEAD", head_sha1, 0, &flag);
 	if (!head_points_at)
 		return error("Invalid HEAD");
 	if (!strcmp(head_points_at, "HEAD"))
@@ -556,8 +598,8 @@ static int fsck_cache_tree(struct cache_tree *it)
 			      sha1_to_hex(it->sha1));
 			return 1;
 		}
-		mark_object_reachable(obj);
 		obj->used = 1;
+		mark_object_reachable(obj);
 		if (obj->type != OBJ_TREE)
 			err |= objerror(obj, "non-tree in cache-tree");
 	}
@@ -572,8 +614,9 @@ static char const * const fsck_usage[] = {
 };
 
 static struct option fsck_opts[] = {
-	OPT__VERBOSE(&verbose),
+	OPT__VERBOSE(&verbose, "be verbose"),
 	OPT_BOOLEAN(0, "unreachable", &show_unreachable, "show unreachable objects"),
+	OPT_BOOL(0, "dangling", &show_dangling, "show dangling objects"),
 	OPT_BOOLEAN(0, "tags", &show_tags, "report tags"),
 	OPT_BOOLEAN(0, "root", &show_root, "report root nodes"),
 	OPT_BOOLEAN(0, "cache", &keep_cache_objects, "make index objects head nodes"),
@@ -582,6 +625,7 @@ static struct option fsck_opts[] = {
 	OPT_BOOLEAN(0, "strict", &check_strict, "enable more strict checking"),
 	OPT_BOOLEAN(0, "lost-found", &write_lost_and_found,
 				"write dangling objects in .git/lost-found"),
+	OPT_BOOL(0, "progress", &show_progress, "show progress"),
 	OPT_END(),
 };
 
@@ -594,6 +638,12 @@ int cmd_fsck(int argc, const char **argv, const char *prefix)
 	read_replace_refs = 0;
 
 	argc = parse_options(argc, argv, prefix, fsck_opts, fsck_usage, 0);
+
+	if (show_progress == -1)
+		show_progress = isatty(2);
+	if (verbose)
+		show_progress = 0;
+
 	if (write_lost_and_found) {
 		check_full = 1;
 		include_reflogs = 0;
@@ -613,20 +663,28 @@ int cmd_fsck(int argc, const char **argv, const char *prefix)
 
 	if (check_full) {
 		struct packed_git *p;
+		uint32_t total = 0, count = 0;
+		struct progress *progress = NULL;
 
 		prepare_packed_git();
-		for (p = packed_git; p; p = p->next)
-			/* verify gives error messages itself */
-			verify_pack(p);
 
-		for (p = packed_git; p; p = p->next) {
-			uint32_t j, num;
-			if (open_pack_index(p))
-				continue;
-			num = p->num_objects;
-			for (j = 0; j < num; j++)
-				fsck_sha1(nth_packed_object_sha1(p, j));
+		if (show_progress) {
+			for (p = packed_git; p; p = p->next) {
+				if (open_pack_index(p))
+					continue;
+				total += p->num_objects;
+			}
+
+			progress = start_progress("Checking objects", total);
 		}
+		for (p = packed_git; p; p = p->next) {
+			/* verify gives error messages itself */
+			if (verify_pack(p, fsck_obj_buffer,
+					progress, count))
+				errors_found |= ERROR_PACK;
+			count += p->num_objects;
+		}
+		stop_progress(&progress);
 	}
 
 	heads = 0;

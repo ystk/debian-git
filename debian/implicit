@@ -5,9 +5,10 @@ deb-checkdir:
 deb-checkuid:
 	@test "`id -u`" -eq 0 || sh -cx '! : need root privileges'
 
-%.deb: %.deb-docs %.deb-DEBIAN
+%.deb: %.deb-docs %.deb-lintian %.deb-doc-base %.deb-DEBIAN
 	@rm -f $*.deb $*.deb-checkdir $*.deb-docs $*.deb-docs-base \
-	  $*.deb-docs-docs $*.deb-docs-examples $*.deb-DEBIAN \
+	  $*.deb-docs-docs $*.deb-docs-examples \
+	  $*.deb-lintian $*.deb-doc-base $*.deb-DEBIAN \
 	  $*.deb-DEBIAN-dir $*.deb-DEBIAN-scripts $*.deb-DEBIAN-md5sums
 
 %.udeb: %.deb-DEBIAN
@@ -46,12 +47,10 @@ deb-checkuid:
 	  fi; \
 	  sh -cx "install -m0644 $$i debian/$*/usr/share/doc/$*/" || exit 1; \
 	done
-	@test ! -r debian/$*.README.Debian || \
-	  sh -cx 'install -m0644 debian/$*.README.Debian \
-	    debian/$*/usr/share/doc/$*/README.Debian'
-	@test ! -r debian/$*.README.source || \
-	  sh -cx 'install -m0644 debian/$*.README.source \
-	    debian/$*/usr/share/doc/$*/README.source'
+	@for i in `ls -d debian/$*.README.* 2>/dev/null || :`; do  \
+	  sh -cx "install -m0644 $$i \
+	    debian/$*/usr/share/doc/$*/$${i#debian/$*.}" || exit 1; \
+	done
 	@if test -r debian/$*.NEWS.Debian; then \
 	  sh -cx 'install -m0644 debian/$*.NEWS.Debian \
 	    debian/$*/usr/share/doc/$*/NEWS.Debian && \
@@ -69,6 +68,22 @@ deb-checkuid:
 %.deb-docs: %.deb-checkdir %.deb-docs-base %.deb-docs-docs %.deb-docs-examples
 	: debian/$*/usr/share/doc/$*/ ok
 
+%.deb-lintian: %.deb-checkdir
+	: debian/$*/usr/share/lintian/overrides
+	@test ! -r debian/$*.lintian-overrides || \
+	  install -d -m0755 debian/$*/usr/share/lintian/overrides
+	@test ! -r debian/$*.lintian-overrides || \
+	  sh -cx "install -m0644 debian/$*.lintian-overrides \
+	    debian/$*/usr/share/lintian/overrides/$*"
+%.deb-doc-base: %.deb-checkdir
+	: debian/$*/usr/share/doc-base
+	@! ls -d debian/$*.doc-base.* || \
+	  install -d -m0755 debian/$*/usr/share/doc-base
+	@for i in `ls -d debian/$*.doc-base.* 2>/dev/null || :`; do \
+	  sh -cx "install -m0644 $$i \
+	    debian/$*/usr/share/doc-base/$${i#debian/$*.doc-base.}" || exit 1; \
+	done
+
 %.deb-DEBIAN-base: install
 	@rm -rf debian/$*/DEBIAN
 	: debian/$*/DEBIAN/
@@ -84,10 +99,14 @@ deb-checkuid:
 	    sh -cx "install -m0755 debian/$*.$$i debian/$*/DEBIAN/$$i" \
 	      || exit 1; \
 	done
-%.deb-DEBIAN-md5sums: %.deb-DEBIAN-base %.deb-docs
+%.deb-DEBIAN-md5sums: %.deb-DEBIAN-base
 	: debian/$*/DEBIAN/md5sums
 	@rm -f debian/$*/DEBIAN/md5sums
 	@cd debian/$* && find * -path 'DEBIAN' -prune -o \
 	  -type f -exec md5sum {} >>DEBIAN/md5sums \;
-%.deb-DEBIAN: %.deb-checkdir %.deb-DEBIAN-base %.deb-DEBIAN-scripts
+	@chmod 0644 debian/$*/DEBIAN/md5sums
+	@test -s debian/$*/DEBIAN/md5sums || \
+	  rm -f debian/$*/DEBIAN/md5sums
+%.deb-DEBIAN: %.deb-checkdir %.deb-DEBIAN-base %.deb-DEBIAN-scripts \
+	  %.deb-DEBIAN-md5sums
 	: debian/$*/DEBIAN/ ok

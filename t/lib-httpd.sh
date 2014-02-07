@@ -75,12 +75,13 @@ fi
 
 prepare_httpd() {
 	mkdir -p "$HTTPD_DOCUMENT_ROOT_PATH"
+	cp "$TEST_PATH"/passwd "$HTTPD_ROOT_PATH"
 
 	ln -s "$LIB_HTTPD_MODULE_PATH" "$HTTPD_ROOT_PATH/modules"
 
 	if test -n "$LIB_HTTPD_SSL"
 	then
-		HTTPD_URL=https://127.0.0.1:$LIB_HTTPD_PORT
+		HTTPD_PROTO=https
 
 		RANDFILE_PATH="$HTTPD_ROOT_PATH"/.rnd openssl req \
 			-config "$TEST_PATH/ssl.cnf" \
@@ -91,8 +92,12 @@ prepare_httpd() {
 		export GIT_SSL_NO_VERIFY
 		HTTPD_PARA="$HTTPD_PARA -DSSL"
 	else
-		HTTPD_URL=http://127.0.0.1:$LIB_HTTPD_PORT
+		HTTPD_PROTO=http
 	fi
+	HTTPD_DEST=127.0.0.1:$LIB_HTTPD_PORT
+	HTTPD_URL=$HTTPD_PROTO://$HTTPD_DEST
+	HTTPD_URL_USER=$HTTPD_PROTO://user%40host@$HTTPD_DEST
+	HTTPD_URL_USER_PASS=$HTTPD_PROTO://user%40host:user%40host@$HTTPD_DEST
 
 	if test -n "$LIB_HTTPD_DAV" -o -n "$LIB_HTTPD_SVN"
 	then
@@ -155,7 +160,6 @@ test_http_push_nonff() {
 	'
 
 	test_expect_success 'non-fast-forward push shows help message' '
-		grep "To prevent you from losing history, non-fast-forward updates were rejected" \
-			output
+		test_i18ngrep "Updates were rejected because" output
 	'
 }

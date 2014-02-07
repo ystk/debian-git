@@ -11,11 +11,15 @@
 static const char rev_list_usage[] =
 "git rev-list [OPTION] <commit-id>... [ -- paths... ]\n"
 "  limiting output:\n"
-"    --max-count=nr\n"
-"    --max-age=epoch\n"
-"    --min-age=epoch\n"
+"    --max-count=<n>\n"
+"    --max-age=<epoch>\n"
+"    --min-age=<epoch>\n"
 "    --sparse\n"
 "    --no-merges\n"
+"    --min-parents=<n>\n"
+"    --no-min-parents\n"
+"    --max-parents=<n>\n"
+"    --no-max-parents\n"
 "    --remove-empty\n"
 "    --all\n"
 "    --branches\n"
@@ -33,7 +37,7 @@ static const char rev_list_usage[] =
 "    --objects | --objects-edge\n"
 "    --unpacked\n"
 "    --header | --pretty\n"
-"    --abbrev=nr | --no-abbrev\n"
+"    --abbrev=<n> | --no-abbrev\n"
 "    --abbrev-commit\n"
 "    --left-right\n"
 "  special purpose:\n"
@@ -48,10 +52,17 @@ static void show_commit(struct commit *commit, void *data)
 	struct rev_list_info *info = data;
 	struct rev_info *revs = info->revs;
 
+	if (info->flags & REV_LIST_QUIET) {
+		finish_commit(commit, data);
+		return;
+	}
+
 	graph_show_commit(revs->graph);
 
 	if (revs->count) {
-		if (commit->object.flags & SYMMETRIC_LEFT)
+		if (commit->object.flags & PATCHSAME)
+			revs->count_same++;
+		else if (commit->object.flags & SYMMETRIC_LEFT)
 			revs->count_left++;
 		else
 			revs->count_right++;
@@ -64,18 +75,8 @@ static void show_commit(struct commit *commit, void *data)
 	if (info->header_prefix)
 		fputs(info->header_prefix, stdout);
 
-	if (!revs->graph) {
-		if (commit->object.flags & BOUNDARY)
-			putchar('-');
-		else if (commit->object.flags & UNINTERESTING)
-			putchar('^');
-		else if (revs->left_right) {
-			if (commit->object.flags & SYMMETRIC_LEFT)
-				putchar('<');
-			else
-				putchar('>');
-		}
-	}
+	if (!revs->graph)
+		fputs(get_revision_mark(revs, commit), stdout);
 	if (revs->abbrev_commit && revs->abbrev)
 		fputs(find_unique_abbrev(commit->object.sha1, revs->abbrev),
 		      stdout);
@@ -108,7 +109,9 @@ static void show_commit(struct commit *commit, void *data)
 		struct pretty_print_context ctx = {0};
 		ctx.abbrev = revs->abbrev;
 		ctx.date_mode = revs->date_mode;
-		pretty_print_commit(revs->commit_format, commit, &buf, &ctx);
+		ctx.date_mode_explicit = revs->date_mode_explicit;
+		ctx.fmt = revs->commit_format;
+		pretty_print_commit(&ctx, commit, &buf);
 		if (revs->graph) {
 			if (buf.len) {
 				if (revs->commit_format != CMIT_FMT_ONELINE)
@@ -147,8 +150,10 @@ static void show_commit(struct commit *commit, void *data)
 			}
 		} else {
 			if (revs->commit_format != CMIT_FMT_USERFORMAT ||
-			    buf.len)
-				printf("%s%c", buf.buf, info->hdr_termination);
+			    buf.len) {
+				fwrite(buf.buf, 1, buf.len, stdout);
+				putchar(info->hdr_termination);
+			}
 		}
 		strbuf_release(&buf);
 	} else {
@@ -169,29 +174,26 @@ static void finish_commit(struct commit *commit, void *data)
 	commit->buffer = NULL;
 }
 
-static void finish_object(struct object *obj, const struct name_path *path, const char *name)
+static void finish_object(struct object *obj,
+			  const struct name_path *path, const char *name,
+			  void *cb_data)
 {
+	struct rev_list_info *info = cb_data;
 	if (obj->type == OBJ_BLOB && !has_sha1_file(obj->sha1))
 		die("missing blob object '%s'", sha1_to_hex(obj->sha1));
+	if (info->revs->verify_objects && !obj->parsed && obj->type != OBJ_COMMIT)
+		parse_object(obj->sha1);
 }
 
-static void show_object(struct object *obj, const struct name_path *path, const char *component)
+static void show_object(struct object *obj,
+			const struct name_path *path, const char *component,
+			void *cb_data)
 {
-	char *name = path_name(path, component);
-	/* An object with name "foo\n0000000..." can be used to
-	 * confuse downstream "git pack-objects" very badly.
-	 */
-	const char *ep = strchr(name, '\n');
-
-	finish_object(obj, path, name);
-	if (ep) {
-		printf("%s %.*s\n", sha1_to_hex(obj->sha1),
-		       (int) (ep - name),
-		       name);
-	}
-	else
-		printf("%s %s\n", sha1_to_hex(obj->sha1), name);
-	free(name);
+	struct rev_list_info *info = cb_data;
+	finish_object(obj, path, component, cb_data);
+	if (info->flags & REV_LIST_QUIET)
+		return;
+	show_object_with_name(stdout, obj, path, component);
 }
 
 static void show_edge(struct commit *commit)
@@ -248,13 +250,6 @@ void print_commit_list(struct commit_list *list,
 	}
 }
 
-static void show_tried_revs(struct commit_list *tried)
-{
-	printf("bisect_tried='");
-	print_commit_list(tried, "%s|", "%s");
-	printf("'\n");
-}
-
 static void print_var_str(const char *var, const char *val)
 {
 	printf("%s='%s'\n", var, val);
@@ -267,12 +262,12 @@ static void print_var_int(const char *var, int val)
 
 static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 {
-	int cnt, flags = info->bisect_show_flags;
+	int cnt, flags = info->flags;
 	char hex[41] = "";
 	struct commit_list *tried;
 	struct rev_info *revs = info->revs;
 
-	if (!revs->commits && !(flags & BISECT_SHOW_TRIED))
+	if (!revs->commits)
 		return 1;
 
 	revs->commits = filter_skipped(revs->commits, &tried,
@@ -300,9 +295,6 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 		printf("------\n");
 	}
 
-	if (flags & BISECT_SHOW_TRIED)
-		show_tried_revs(tried);
-
 	print_var_str("bisect_rev", hex);
 	print_var_int("bisect_nr", cnt - 1);
 	print_var_int("bisect_good", all - reaches - 1);
@@ -321,7 +313,6 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	int bisect_list = 0;
 	int bisect_show_vars = 0;
 	int bisect_find_all = 0;
-	int quiet = 0;
 
 	git_config(git_default_config, NULL);
 	init_revisions(&revs, prefix);
@@ -334,7 +325,8 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (revs.bisect)
 		bisect_list = 1;
 
-	quiet = DIFF_OPT_TST(&revs.diffopt, QUICK);
+	if (DIFF_OPT_TST(&revs.diffopt, QUICK))
+		info.flags |= REV_LIST_QUIET;
 	for (i = 1 ; i < argc; i++) {
 		const char *arg = argv[i];
 
@@ -353,7 +345,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		if (!strcmp(arg, "--bisect-all")) {
 			bisect_list = 1;
 			bisect_find_all = 1;
-			info.bisect_show_flags = BISECT_SHOW_ALL;
+			info.flags |= BISECT_SHOW_ALL;
 			revs.show_decorations = 1;
 			continue;
 		}
@@ -404,14 +396,15 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			return show_bisect_vars(&info, reaches, all);
 	}
 
-	traverse_commit_list(&revs,
-			     quiet ? finish_commit : show_commit,
-			     quiet ? finish_object : show_object,
-			     &info);
+	traverse_commit_list(&revs, show_commit, show_object, &info);
 
 	if (revs.count) {
-		if (revs.left_right)
+		if (revs.left_right && revs.cherry_mark)
+			printf("%d\t%d\t%d\n", revs.count_left, revs.count_right, revs.count_same);
+		else if (revs.left_right)
 			printf("%d\t%d\n", revs.count_left, revs.count_right);
+		else if (revs.cherry_mark)
+			printf("%d\t%d\n", revs.count_left + revs.count_right, revs.count_same);
 		else
 			printf("%d\n", revs.count_left + revs.count_right);
 	}

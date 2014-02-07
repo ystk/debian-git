@@ -12,7 +12,7 @@ SYNOPSIS
 'git update-index'
 	     [--add] [--remove | --force-remove] [--replace]
 	     [--refresh] [-q] [--unmerged] [--ignore-missing]
-	     [--cacheinfo <mode> <object> <file>]\*
+	     [(--cacheinfo <mode> <object> <file>)...]
 	     [--chmod=(+|-)x]
 	     [--assume-unchanged | --no-assume-unchanged]
 	     [--skip-worktree | --no-skip-worktree]
@@ -21,7 +21,7 @@ SYNOPSIS
 	     [--info-only] [--index-info]
 	     [-z] [--stdin]
 	     [--verbose]
-	     [--] [<file>]\*
+	     [--] [<file>...]
 
 DESCRIPTION
 -----------
@@ -144,8 +144,8 @@ you will need to handle the situation manually.
         Report what is being added and removed from index.
 
 -z::
-	Only meaningful with `--stdin`; paths are separated with
-	NUL character instead of LF.
+	Only meaningful with `--stdin` or `--index-info`; paths are
+	separated with NUL character instead of LF.
 
 \--::
 	Do not interpret any more arguments as options.
@@ -264,7 +264,9 @@ tree files, you have to explicitly tell git about it by dropping
 "assume unchanged" bit, either before or after you modify them.
 
 In order to set "assume unchanged" bit, use `--assume-unchanged`
-option.  To unset, use `--no-assume-unchanged`.
+option.  To unset, use `--no-assume-unchanged`. To see which files
+have the "assume unchanged" bit set, use `git ls-files -v`
+(see linkgit:git-ls-files[1]).
 
 The command looks at `core.ignorestat` configuration variable.  When
 this is true, paths updated with `git update-index paths...` and
@@ -363,16 +365,8 @@ ctime for marking files processed) (see linkgit:git-config[1]).
 SEE ALSO
 --------
 linkgit:git-config[1],
-linkgit:git-add[1]
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
+linkgit:git-add[1],
+linkgit:git-ls-files[1]
 
 GIT
 ---

@@ -57,7 +57,7 @@ test_expect_success 'setup' '
 # as argument to co -d
 test_expect_success 'basic checkout' \
   'GIT_CONFIG="$git_config" cvs -Q co -d cvswork master &&
-   test "$(echo $(grep -v ^D cvswork/CVS/Entries|cut -d/ -f2,3,5 | head -n 1))" = "empty/1.1/"
+   test "$(echo $(grep -v ^D cvswork/CVS/Entries|cut -d/ -f2,3,5 | head -n 1))" = "empty/1.1/" &&
    test "$(echo $(grep -v ^D cvswork/CVS/Entries|cut -d/ -f2,3,5 | sed -ne \$p))" = "secondrootfile/1.1/"'
 
 #------------------------
@@ -476,14 +476,14 @@ test_expect_success 'cvs status' '
     cd cvswork &&
     GIT_CONFIG="$git_config" cvs update &&
     GIT_CONFIG="$git_config" cvs status | grep "^File: status.file" >../out &&
-    test $(wc -l <../out) = 2
+    test_line_count = 2 ../out
 '
 
 cd "$WORKDIR"
 test_expect_success 'cvs status (nonrecursive)' '
     cd cvswork &&
     GIT_CONFIG="$git_config" cvs status -l | grep "^File: status.file" >../out &&
-    test $(wc -l <../out) = 1
+    test_line_count = 1 ../out
 '
 
 cd "$WORKDIR"
@@ -500,8 +500,8 @@ test_expect_success 'cvs status (no subdirs in header)' '
 cd "$WORKDIR"
 test_expect_success 'cvs co -c (shows module database)' '
     GIT_CONFIG="$git_config" cvs co -c > out &&
-    grep "^master[	 ]\+master$" < out &&
-    ! grep -v "^master[	 ]\+master$" < out
+    grep "^master[	 ][ 	]*master$" <out &&
+    ! grep -v "^master[	 ][ 	]*master$" <out
 '
 
 #------------

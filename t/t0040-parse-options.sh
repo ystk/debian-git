@@ -10,7 +10,10 @@ test_description='our own option parser'
 cat > expect << EOF
 usage: test-parse-options <options>
 
-    -b, --boolean         get a boolean
+    --yes                 get a boolean
+    -D, --no-doubt        begins with 'no-'
+    -B, --no-fear         be brave
+    -b, --boolean         increment by one
     -4, --or4             bitwise-or boolean with ...0100
     --neg-or4             same as --no-or4
 
@@ -19,7 +22,7 @@ usage: test-parse-options <options>
     --set23               set integer to 23
     -t <time>             get timestamp of <time>
     -L, --length <str>    get length of <str>
-    -F, --file <FILE>     set file to <FILE>
+    -F, --file <file>     set file to <file>
 
 String options
     -s, --string <string>
@@ -28,6 +31,7 @@ String options
     --st <st>             get another string (pervert ordering)
     -o <str>              get another string
     --default-string      set string to default
+    --list <str>          add str to list
 
 Magic arguments
     --quux                means --quux
@@ -51,6 +55,59 @@ test_expect_success 'test help' '
 '
 
 mv expect expect.err
+
+cat >expect.template <<EOF
+boolean: 0
+integer: 0
+timestamp: 0
+string: (not set)
+abbrev: 7
+verbose: 0
+quiet: no
+dry run: no
+file: (not set)
+EOF
+
+check() {
+	what="$1" &&
+	shift &&
+	expect="$1" &&
+	shift &&
+	sed "s/^$what .*/$what $expect/" <expect.template >expect &&
+	test-parse-options $* >output 2>output.err &&
+	test ! -s output.err &&
+	test_cmp expect output
+}
+
+check_unknown() {
+	case "$1" in
+	--*)
+		echo error: unknown option \`${1#--}\' >expect ;;
+	-*)
+		echo error: unknown switch \`${1#-}\' >expect ;;
+	esac &&
+	cat expect.err >>expect &&
+	test_must_fail test-parse-options $* >output 2>output.err &&
+	test ! -s output &&
+	test_cmp expect output.err
+}
+
+test_expect_success 'OPT_BOOL() #1' 'check boolean: 1 --yes'
+test_expect_success 'OPT_BOOL() #2' 'check boolean: 1 --no-doubt'
+test_expect_success 'OPT_BOOL() #3' 'check boolean: 1 -D'
+test_expect_success 'OPT_BOOL() #4' 'check boolean: 1 --no-fear'
+test_expect_success 'OPT_BOOL() #5' 'check boolean: 1 -B'
+
+test_expect_success 'OPT_BOOL() is idempotent #1' 'check boolean: 1 --yes --yes'
+test_expect_success 'OPT_BOOL() is idempotent #2' 'check boolean: 1 -DB'
+
+test_expect_success 'OPT_BOOL() negation #1' 'check boolean: 0 -D --no-yes'
+test_expect_success 'OPT_BOOL() negation #2' 'check boolean: 0 -D --no-no-doubt'
+
+test_expect_success 'OPT_BOOL() no negation #1' 'check_unknown --fear'
+test_expect_success 'OPT_BOOL() no negation #2' 'check_unknown --no-no-fear'
+
+test_expect_success 'OPT_BOOL() positivation' 'check boolean: 0 -D --doubt'
 
 cat > expect << EOF
 boolean: 2
@@ -86,7 +143,7 @@ EOF
 test_expect_success 'long options' '
 	test-parse-options --boolean --integer 1729 --boolean --string2=321 \
 		--verbose --verbose --no-dry-run --abbrev=10 --file fi.le\
-		> output 2> output.err &&
+		--obsolete > output 2> output.err &&
 	test ! -s output.err &&
 	test_cmp expect output
 '
@@ -175,6 +232,16 @@ EOF
 
 test_expect_success 'detect possible typos' '
 	test_must_fail test-parse-options -boolean > output 2> output.err &&
+	test ! -s output &&
+	test_cmp typo.err output.err
+'
+
+cat > typo.err << EOF
+error: did you mean \`--ambiguous\` (with two dashes ?)
+EOF
+
+test_expect_success 'detect possible typos' '
+	test_must_fail test-parse-options -ambiguous > output 2> output.err &&
 	test ! -s output &&
 	test_cmp typo.err output.err
 '
@@ -295,7 +362,7 @@ test_expect_success 'OPT_NEGBIT() works' '
 	test_cmp expect output
 '
 
-test_expect_success 'OPT_BOOLEAN() with PARSE_OPT_NODASH works' '
+test_expect_success 'OPT_COUNTUP() with PARSE_OPT_NODASH works' '
 	test-parse-options + + + + + + > output 2> output.err &&
 	test ! -s output.err &&
 	test_cmp expect output
@@ -334,6 +401,22 @@ EOF
 test_expect_success 'negation of OPT_NONEG flags is not ambiguous' '
 	test-parse-options --no-ambig >output 2>output.err &&
 	test ! -s output.err &&
+	test_cmp expect output
+'
+
+cat >>expect <<'EOF'
+list: foo
+list: bar
+list: baz
+EOF
+test_expect_success '--list keeps list of strings' '
+	test-parse-options --list foo --list=bar --list=baz >output &&
+	test_cmp expect output
+'
+
+test_expect_success '--no-list resets list' '
+	test-parse-options --list=other --list=irrelevant --list=options \
+		--no-list --list=foo --list=bar --list=baz >output &&
 	test_cmp expect output
 '
 

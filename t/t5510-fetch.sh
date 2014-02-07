@@ -14,6 +14,14 @@ test_bundle_object_count () {
 	test "$2" = $(grep '^[0-9a-f]\{40\} ' verify.out | wc -l)
 }
 
+convert_bundle_to_pack () {
+	while read x && test -n "$x"
+	do
+		:;
+	done
+	cat
+}
+
 test_expect_success setup '
 	echo >file original &&
 	git add file &&
@@ -21,27 +29,30 @@ test_expect_success setup '
 
 test_expect_success "clone and setup child repos" '
 	git clone . one &&
-	cd one &&
-	echo >file updated by one &&
-	git commit -a -m "updated by one" &&
-	cd .. &&
+	(
+		cd one &&
+		echo >file updated by one &&
+		git commit -a -m "updated by one"
+	) &&
 	git clone . two &&
-	cd two &&
-	git config branch.master.remote one &&
-	git config remote.one.url ../one/.git/ &&
-	git config remote.one.fetch refs/heads/master:refs/heads/one &&
-	cd .. &&
+	(
+		cd two &&
+		git config branch.master.remote one &&
+		git config remote.one.url ../one/.git/ &&
+		git config remote.one.fetch refs/heads/master:refs/heads/one
+	) &&
 	git clone . three &&
-	cd three &&
-	git config branch.master.remote two &&
-	git config branch.master.merge refs/heads/one &&
-	mkdir -p .git/remotes &&
-	{
-		echo "URL: ../two/.git/"
-		echo "Pull: refs/heads/master:refs/heads/two"
-		echo "Pull: refs/heads/one:refs/heads/one"
-	} >.git/remotes/two &&
-	cd .. &&
+	(
+		cd three &&
+		git config branch.master.remote two &&
+		git config branch.master.merge refs/heads/one &&
+		mkdir -p .git/remotes &&
+		{
+			echo "URL: ../two/.git/"
+			echo "Pull: refs/heads/master:refs/heads/two"
+			echo "Pull: refs/heads/one:refs/heads/one"
+		} >.git/remotes/two
+	) &&
 	git clone . bundle &&
 	git clone . seven
 '
@@ -67,11 +78,61 @@ test_expect_success "fetch test for-merge" '
 	master_in_two=`cd ../two && git rev-parse master` &&
 	one_in_two=`cd ../two && git rev-parse one` &&
 	{
-		echo "$master_in_two	not-for-merge"
 		echo "$one_in_two	"
+		echo "$master_in_two	not-for-merge"
 	} >expected &&
 	cut -f -2 .git/FETCH_HEAD >actual &&
 	test_cmp expected actual'
+
+test_expect_success 'fetch --prune on its own works as expected' '
+	cd "$D" &&
+	git clone . prune &&
+	cd prune &&
+	git fetch origin refs/heads/master:refs/remotes/origin/extrabranch &&
+
+	git fetch --prune origin &&
+	test_must_fail git rev-parse origin/extrabranch
+'
+
+test_expect_success 'fetch --prune with a branch name keeps branches' '
+	cd "$D" &&
+	git clone . prune-branch &&
+	cd prune-branch &&
+	git fetch origin refs/heads/master:refs/remotes/origin/extrabranch &&
+
+	git fetch --prune origin master &&
+	git rev-parse origin/extrabranch
+'
+
+test_expect_success 'fetch --prune with a namespace keeps other namespaces' '
+	cd "$D" &&
+	git clone . prune-namespace &&
+	cd prune-namespace &&
+
+	git fetch --prune origin refs/heads/a/*:refs/remotes/origin/a/* &&
+	git rev-parse origin/master
+'
+
+test_expect_success 'fetch --prune --tags does not delete the remote-tracking branches' '
+	cd "$D" &&
+	git clone . prune-tags &&
+	cd prune-tags &&
+	git fetch origin refs/heads/master:refs/tags/sometag &&
+
+	git fetch --prune --tags origin &&
+	git rev-parse origin/master &&
+	test_must_fail git rev-parse somebranch
+'
+
+test_expect_success 'fetch --prune --tags with branch does not delete other remote-tracking branches' '
+	cd "$D" &&
+	git clone . prune-tags-branch &&
+	cd prune-tags-branch &&
+	git fetch origin refs/heads/master:refs/remotes/origin/extrabranch &&
+
+	git fetch --prune --tags origin master &&
+	git rev-parse origin/extrabranch
+'
 
 test_expect_success 'fetch tags when there is no tags' '
 
@@ -101,6 +162,36 @@ test_expect_success 'fetch following tags' '
 
 '
 
+test_expect_success 'fetch uses remote ref names to describe new refs' '
+	cd "$D" &&
+	git init descriptive &&
+	(
+		cd descriptive &&
+		git config remote.o.url .. &&
+		git config remote.o.fetch "refs/heads/*:refs/crazyheads/*" &&
+		git config --add remote.o.fetch "refs/others/*:refs/heads/*" &&
+		git fetch o
+	) &&
+	git tag -a -m "Descriptive tag" descriptive-tag &&
+	git branch descriptive-branch &&
+	git checkout descriptive-branch &&
+	echo "Nuts" >crazy &&
+	git add crazy &&
+	git commit -a -m "descriptive commit" &&
+	git update-ref refs/others/crazy HEAD &&
+	(
+		cd descriptive &&
+		git fetch o 2>actual &&
+		grep " -> refs/crazyheads/descriptive-branch$" actual |
+		test_i18ngrep "new branch" &&
+		grep " -> descriptive-tag$" actual |
+		test_i18ngrep "new tag" &&
+		grep " -> crazy$" actual |
+		test_i18ngrep "new ref"
+	) &&
+	git checkout master
+'
+
 test_expect_success 'fetch must not resolve short tag name' '
 
 	cd "$D" &&
@@ -113,17 +204,16 @@ test_expect_success 'fetch must not resolve short tag name' '
 
 '
 
-test_expect_success 'fetch must not resolve short remote name' '
+test_expect_success 'fetch can now resolve short remote name' '
 
 	cd "$D" &&
-	git update-ref refs/remotes/six/HEAD HEAD
+	git update-ref refs/remotes/six/HEAD HEAD &&
 
 	mkdir six &&
 	cd six &&
 	git init &&
 
-	test_must_fail git fetch .. six:six
-
+	git fetch .. six:six
 '
 
 test_expect_success 'create bundle 1' '
@@ -154,13 +244,7 @@ test_expect_success 'unbundle 1' '
 
 test_expect_success 'bundle 1 has only 3 files ' '
 	cd "$D" &&
-	(
-		while read x && test -n "$x"
-		do
-			:;
-		done
-		cat
-	) <bundle1 >bundle.pack &&
+	convert_bundle_to_pack <bundle1 >bundle.pack &&
 	git index-pack bundle.pack &&
 	test_bundle_object_count bundle.pack 3
 '
@@ -177,13 +261,7 @@ test_expect_success 'bundle does not prerequisite objects' '
 	git add file2 &&
 	git commit -m add.file2 file2 &&
 	git bundle create bundle3 -1 HEAD &&
-	(
-		while read x && test -n "$x"
-		do
-			:;
-		done
-		cat
-	) <bundle3 >bundle.pack &&
+	convert_bundle_to_pack <bundle3 >bundle.pack &&
 	git index-pack bundle.pack &&
 	test_bundle_object_count bundle.pack 3
 '
@@ -238,6 +316,38 @@ test_expect_success 'fetch with a non-applying branch.<name>.merge' '
 	git config remote.blub.url one &&
 	git config remote.blub.fetch "refs/heads/*:refs/remotes/one/*" &&
 	git fetch blub
+'
+
+# URL supplied to fetch does not match the url of the configured branch's remote
+test_expect_success 'fetch from GIT URL with a non-applying branch.<name>.merge [1]' '
+	one_head=$(cd one && git rev-parse HEAD) &&
+	this_head=$(git rev-parse HEAD) &&
+	git update-ref -d FETCH_HEAD &&
+	git fetch one &&
+	test $one_head = "$(git rev-parse --verify FETCH_HEAD)" &&
+	test $this_head = "$(git rev-parse --verify HEAD)"
+'
+
+# URL supplied to fetch matches the url of the configured branch's remote and
+# the merge spec matches the branch the remote HEAD points to
+test_expect_success 'fetch from GIT URL with a non-applying branch.<name>.merge [2]' '
+	one_ref=$(cd one && git symbolic-ref HEAD) &&
+	git config branch.master.remote blub &&
+	git config branch.master.merge "$one_ref" &&
+	git update-ref -d FETCH_HEAD &&
+	git fetch one &&
+	test $one_head = "$(git rev-parse --verify FETCH_HEAD)" &&
+	test $this_head = "$(git rev-parse --verify HEAD)"
+'
+
+# URL supplied to fetch matches the url of the configured branch's remote, but
+# the merge spec does not match the branch the remote HEAD points to
+test_expect_success 'fetch from GIT URL with a non-applying branch.<name>.merge [3]' '
+	git config branch.master.merge "${one_ref}_not" &&
+	git update-ref -d FETCH_HEAD &&
+	git fetch one &&
+	test $one_head = "$(git rev-parse --verify FETCH_HEAD)" &&
+	test $this_head = "$(git rev-parse --verify HEAD)"
 '
 
 # the strange name is: a\!'b
@@ -349,14 +459,31 @@ test_expect_success 'fetch --dry-run' '
 '
 
 test_expect_success "should be able to fetch with duplicate refspecs" '
-        mkdir dups &&
-        cd dups &&
-        git init &&
-        git config branch.master.remote three &&
-        git config remote.three.url ../three/.git &&
-        git config remote.three.fetch +refs/heads/*:refs/remotes/origin/* &&
-        git config --add remote.three.fetch +refs/heads/*:refs/remotes/origin/* &&
-        git fetch three
+	mkdir dups &&
+	(
+		cd dups &&
+		git init &&
+		git config branch.master.remote three &&
+		git config remote.three.url ../three/.git &&
+		git config remote.three.fetch +refs/heads/*:refs/remotes/origin/* &&
+		git config --add remote.three.fetch +refs/heads/*:refs/remotes/origin/* &&
+		git fetch three
+	)
+'
+
+test_expect_success 'all boundary commits are excluded' '
+	test_commit base &&
+	test_commit oneside &&
+	git checkout HEAD^ &&
+	test_commit otherside &&
+	git checkout master &&
+	test_tick &&
+	git merge otherside &&
+	ad=$(git log --no-walk --format=%ad HEAD) &&
+	git bundle create twoside-boundary.bdl master --since="$ad" &&
+	convert_bundle_to_pack <twoside-boundary.bdl >twoside-boundary.pack &&
+	pack=$(git index-pack --fix-thin --stdin <twoside-boundary.pack) &&
+	test_bundle_object_count .git/objects/pack/pack-${pack##pack	}.pack 3
 '
 
 test_done

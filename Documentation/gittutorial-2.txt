@@ -7,6 +7,7 @@ gittutorial-2 - A tutorial introduction to git: part two
 
 SYNOPSIS
 --------
+[verse]
 git *
 
 DESCRIPTION
@@ -33,12 +34,12 @@ $ echo 'hello world' > file.txt
 $ git add .
 $ git commit -a -m "initial commit"
 [master (root-commit) 54196cc] initial commit
- 1 files changed, 1 insertions(+), 0 deletions(-)
+ 1 file changed, 1 insertion(+)
  create mode 100644 file.txt
 $ echo 'hello world!' >file.txt
 $ git commit -a -m "add emphasis"
 [master c4d59f3] add emphasis
- 1 files changed, 1 insertions(+), 1 deletions(-)
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 ------------------------------------------------
 
 What are the 7 digits of hex that git responded to the commit with?
@@ -373,7 +374,7 @@ $ git status
 #
 #       new file: closing.txt
 #
-# Changed but not updated:
+# Changes not staged for commit:
 #   (use "git add <file>..." to update what will be committed)
 #
 #       modified: file.txt

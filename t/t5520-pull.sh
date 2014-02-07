@@ -46,6 +46,17 @@ test_expect_success 'pulling into void using master:master' '
 	test_cmp file cloned-uho/file
 '
 
+test_expect_success 'pulling into void does not overwrite untracked files' '
+	git init cloned-untracked &&
+	(
+		cd cloned-untracked &&
+		echo untracked >file &&
+		test_must_fail git pull .. master &&
+		echo untracked >expect &&
+		test_cmp expect file
+	)
+'
+
 test_expect_success 'test . as a remote' '
 
 	git branch copy master &&
@@ -83,13 +94,32 @@ test_expect_success '--rebase' '
 	test $(git rev-parse HEAD^) = $(git rev-parse copy) &&
 	test new = $(git show HEAD:file2)
 '
+test_expect_success 'pull.rebase' '
+	git reset --hard before-rebase &&
+	git config --bool pull.rebase true &&
+	test_when_finished "git config --unset pull.rebase" &&
+	git pull . copy &&
+	test $(git rev-parse HEAD^) = $(git rev-parse copy) &&
+	test new = $(git show HEAD:file2)
+'
 
 test_expect_success 'branch.to-rebase.rebase' '
 	git reset --hard before-rebase &&
-	git config branch.to-rebase.rebase 1 &&
+	git config --bool branch.to-rebase.rebase true &&
+	test_when_finished "git config --unset branch.to-rebase.rebase" &&
 	git pull . copy &&
-	git config branch.to-rebase.rebase 0 &&
 	test $(git rev-parse HEAD^) = $(git rev-parse copy) &&
+	test new = $(git show HEAD:file2)
+'
+
+test_expect_success 'branch.to-rebase.rebase should override pull.rebase' '
+	git reset --hard before-rebase &&
+	git config --bool pull.rebase true &&
+	test_when_finished "git config --unset pull.rebase" &&
+	git config --bool branch.to-rebase.rebase false &&
+	test_when_finished "git config --unset branch.to-rebase.rebase" &&
+	git pull . copy &&
+	test $(git rev-parse HEAD^) != $(git rev-parse copy) &&
 	test new = $(git show HEAD:file2)
 '
 
@@ -220,6 +250,13 @@ test_expect_success 'git pull --rebase does not reapply old patches' '
 	 test_must_fail git pull --rebase &&
 	 test 1 = $(find .git/rebase-apply -name "000*" | wc -l)
 	)
+'
+
+test_expect_success 'git pull --rebase against local branch' '
+	git checkout -b copy2 to-rebase-orig &&
+	git pull --rebase . to-rebase &&
+	test "conflicting modification" = "$(cat file)" &&
+	test file = "$(cat file2)"
 '
 
 test_done

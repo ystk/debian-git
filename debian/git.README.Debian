@@ -9,8 +9,8 @@ repositories.  This package provides the git-daemon program, to enable a
 git-daemon service, configure inetd(8) to launch it on demand, or install the
 git-daemon-run package to run it permanently:
  cat >> /etc/inetd.conf <<EOF
-git stream tcp4 nowait nobody /usr/bin/git git daemon --inetd --base-path=/srv/git
-git stream tcp6 nowait nobody /usr/bin/git git daemon --inetd --base-path=/srv/git
+git stream tcp4 nowait nobody /usr/bin/git git daemon --inetd --base-path=/var/cache /var/cache/git
+git stream tcp6 nowait nobody /usr/bin/git git daemon --inetd --base-path=/var/cache /var/cache/git
 EOF
 
 Or:
@@ -53,19 +53,16 @@ configuration that looks like this:
     HeaderName HEADER
     # bogus but safe DocumentRoot
     DocumentRoot /var/cache/git
-    ErrorLog /var/log/apache-ssl/git.example.org-error.log
-    CustomLog /var/log/apache-ssl/git.example.org-access.log combined
+    ErrorLog /var/log/apache2/git.example.org-error.log
+    CustomLog /var/log/apache2/git.example.org-access.log combined
     Alias /robots.txt /var/www/cvs.robots.txt
-    Alias /gitweb.css /usr/share/gitweb/gitweb.css
-    Alias /gitweb.js /usr/share/gitweb/gitweb.js
-    Alias /git-favicon.png /usr/share/gitweb/git-favicon.png
-    Alias /git-logo.png /usr/share/gitweb/git-logo.png
+    Alias /static /usr/share/gitweb/static
     Alias /git /var/cache/git
-    ScriptAlias / /usr/lib/cgi-bin/gitweb.cgi
+    ScriptAlias / /usr/share/gitweb/gitweb.cgi
     RedirectMatch permanent "^/~(.*)$" "http://example.org/~$1" 
 </VirtualHost>
 
-Now git-clone http://git.example.org/git/repo will work.  And if you
+Now git clone http://git.example.org/git/repo will work.  And if you
 installed the gitweb package, http://git.example.org/ now will display a
 list of repositories, making them accessible through a web browser.
 

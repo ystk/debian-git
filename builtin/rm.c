@@ -20,15 +20,6 @@ static struct {
 	const char **name;
 } list;
 
-static void add_list(const char *name)
-{
-	if (list.nr >= list.alloc) {
-		list.alloc = alloc_nr(list.alloc);
-		list.name = xrealloc(list.name, list.alloc * sizeof(const char *));
-	}
-	list.name[list.nr++] = name;
-}
-
 static int check_local_mod(unsigned char *head, int index_only)
 {
 	/*
@@ -115,19 +106,19 @@ static int check_local_mod(unsigned char *head, int index_only)
 		 */
 		if (local_changes && staged_changes) {
 			if (!index_only || !(ce->ce_flags & CE_INTENT_TO_ADD))
-				errs = error("'%s' has staged content different "
+				errs = error(_("'%s' has staged content different "
 					     "from both the file and the HEAD\n"
-					     "(use -f to force removal)", name);
+					     "(use -f to force removal)"), name);
 		}
 		else if (!index_only) {
 			if (staged_changes)
-				errs = error("'%s' has changes staged in the index\n"
+				errs = error(_("'%s' has changes staged in the index\n"
 					     "(use --cached to keep the file, "
-					     "or -f to force removal)", name);
+					     "or -f to force removal)"), name);
 			if (local_changes)
-				errs = error("'%s' has local modifications\n"
+				errs = error(_("'%s' has local modifications\n"
 					     "(use --cached to keep the file, "
-					     "or -f to force removal)", name);
+					     "or -f to force removal)"), name);
 		}
 	}
 	return errs;
@@ -139,10 +130,10 @@ static int show_only = 0, force = 0, index_only = 0, recursive = 0, quiet = 0;
 static int ignore_unmatch = 0;
 
 static struct option builtin_rm_options[] = {
-	OPT__DRY_RUN(&show_only),
-	OPT__QUIET(&quiet),
+	OPT__DRY_RUN(&show_only, "dry run"),
+	OPT__QUIET(&quiet, "do not list removed files"),
 	OPT_BOOLEAN( 0 , "cached",         &index_only, "only remove from the index"),
-	OPT_BOOLEAN('f', "force",          &force,      "override the up-to-date check"),
+	OPT__FORCE(&force, "override the up-to-date check"),
 	OPT_BOOLEAN('r', NULL,             &recursive,  "allow recursive removal"),
 	OPT_BOOLEAN( 0 , "ignore-unmatch", &ignore_unmatch,
 				"exit with a zero status even if nothing matched"),
@@ -168,7 +159,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 	newfd = hold_locked_index(&lock_file, 1);
 
 	if (read_cache() < 0)
-		die("index file corrupt");
+		die(_("index file corrupt"));
 
 	pathspec = get_pathspec(prefix, argv);
 	refresh_index(&the_index, REFRESH_QUIET, pathspec, NULL, NULL);
@@ -182,7 +173,8 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 		struct cache_entry *ce = active_cache[i];
 		if (!match_pathspec(pathspec, ce->name, ce_namelen(ce), 0, seen))
 			continue;
-		add_list(ce->name);
+		ALLOC_GROW(list.name, list.nr + 1, list.alloc);
+		list.name[list.nr++] = ce->name;
 	}
 
 	if (pathspec) {
@@ -191,7 +183,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 		for (i = 0; (match = pathspec[i]) != NULL ; i++) {
 			if (!seen[i]) {
 				if (!ignore_unmatch) {
-					die("pathspec '%s' did not match any files",
+					die(_("pathspec '%s' did not match any files"),
 					    match);
 				}
 			}
@@ -199,7 +191,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 				seen_any = 1;
 			}
 			if (!recursive && seen[i] == MATCHED_RECURSIVELY)
-				die("not removing '%s' recursively without -r",
+				die(_("not removing '%s' recursively without -r"),
 				    *match ? match : ".");
 		}
 
@@ -235,7 +227,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 			printf("rm '%s'\n", path);
 
 		if (remove_file_from_cache(path))
-			die("git rm: unable to remove %s", path);
+			die(_("git rm: unable to remove %s"), path);
 	}
 
 	if (show_only)
@@ -265,7 +257,7 @@ int cmd_rm(int argc, const char **argv, const char *prefix)
 	if (active_cache_changed) {
 		if (write_cache(newfd, active_cache, active_nr) ||
 		    commit_locked_index(&lock_file))
-			die("Unable to write new index file");
+			die(_("Unable to write new index file"));
 	}
 
 	return 0;

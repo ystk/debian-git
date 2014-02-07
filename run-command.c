@@ -1,6 +1,65 @@
 #include "cache.h"
 #include "run-command.h"
 #include "exec_cmd.h"
+#include "sigchain.h"
+#include "argv-array.h"
+
+struct child_to_clean {
+	pid_t pid;
+	struct child_to_clean *next;
+};
+static struct child_to_clean *children_to_clean;
+static int installed_child_cleanup_handler;
+
+static void cleanup_children(int sig)
+{
+	while (children_to_clean) {
+		struct child_to_clean *p = children_to_clean;
+		children_to_clean = p->next;
+		kill(p->pid, sig);
+		free(p);
+	}
+}
+
+static void cleanup_children_on_signal(int sig)
+{
+	cleanup_children(sig);
+	sigchain_pop(sig);
+	raise(sig);
+}
+
+static void cleanup_children_on_exit(void)
+{
+	cleanup_children(SIGTERM);
+}
+
+static void mark_child_for_cleanup(pid_t pid)
+{
+	struct child_to_clean *p = xmalloc(sizeof(*p));
+	p->pid = pid;
+	p->next = children_to_clean;
+	children_to_clean = p;
+
+	if (!installed_child_cleanup_handler) {
+		atexit(cleanup_children_on_exit);
+		sigchain_push_common(cleanup_children_on_signal);
+		installed_child_cleanup_handler = 1;
+	}
+}
+
+static void clear_child_for_cleanup(pid_t pid)
+{
+	struct child_to_clean **last, *p;
+
+	last = &children_to_clean;
+	for (p = children_to_clean; p; p = p->next) {
+		if (p->pid == pid) {
+			*last = p->next;
+			free(p);
+			return;
+		}
+	}
+}
 
 static inline void close_pair(int fd[2])
 {
@@ -16,6 +75,68 @@ static inline void dup_devnull(int to)
 	close(fd);
 }
 #endif
+
+static char *locate_in_PATH(const char *file)
+{
+	const char *p = getenv("PATH");
+	struct strbuf buf = STRBUF_INIT;
+
+	if (!p || !*p)
+		return NULL;
+
+	while (1) {
+		const char *end = strchrnul(p, ':');
+
+		strbuf_reset(&buf);
+
+		/* POSIX specifies an empty entry as the current directory. */
+		if (end != p) {
+			strbuf_add(&buf, p, end - p);
+			strbuf_addch(&buf, '/');
+		}
+		strbuf_addstr(&buf, file);
+
+		if (!access(buf.buf, F_OK))
+			return strbuf_detach(&buf, NULL);
+
+		if (!*end)
+			break;
+		p = end + 1;
+	}
+
+	strbuf_release(&buf);
+	return NULL;
+}
+
+static int exists_in_PATH(const char *file)
+{
+	char *r = locate_in_PATH(file);
+	free(r);
+	return r != NULL;
+}
+
+int sane_execvp(const char *file, char * const argv[])
+{
+	if (!execvp(file, argv))
+		return 0; /* cannot happen ;-) */
+
+	/*
+	 * When a command can't be found because one of the directories
+	 * listed in $PATH is unsearchable, execvp reports EACCES, but
+	 * careful usability testing (read: analysis of occasional bug
+	 * reports) reveals that "No such file or directory" is more
+	 * intuitive.
+	 *
+	 * We avoid commands with "/", because execvp will not do $PATH
+	 * lookups in that case.
+	 *
+	 * The reassignment of EACCES to errno looks like a no-op below,
+	 * but we need to protect against exists_in_PATH overwriting errno.
+	 */
+	if (errno == EACCES && !strchr(file, '/'))
+		errno = exists_in_PATH(file) ? EACCES : ENOENT;
+	return -1;
+}
 
 static const char **prepare_shell_cmd(const char **argv)
 {
@@ -55,7 +176,7 @@ static int execv_shell_cmd(const char **argv)
 {
 	const char **nargv = prepare_shell_cmd(argv);
 	trace_argv_printf(nargv, "trace: exec:");
-	execvp(nargv[0], (char **)nargv);
+	sane_execvp(nargv[0], (char **)nargv);
 	free(nargv);
 	return -1;
 }
@@ -67,22 +188,23 @@ static int child_notifier = -1;
 
 static void notify_parent(void)
 {
-	ssize_t unused;
-	unused = write(child_notifier, "", 1);
+	/*
+	 * execvp failed.  If possible, we'd like to let start_command
+	 * know, so failures like ENOENT can be handled right away; but
+	 * otherwise, finish_command will still report the error.
+	 */
+	xwrite(child_notifier, "", 1);
 }
 
 static NORETURN void die_child(const char *err, va_list params)
 {
-	char msg[4096];
-	ssize_t unused;
-	int len = vsnprintf(msg, sizeof(msg), err, params);
-	if (len > sizeof(msg))
-		len = sizeof(msg);
-
-	unused = write(child_err, "fatal: ", 7);
-	unused = write(child_err, msg, len);
-	unused = write(child_err, "\n", 1);
+	vwritef(child_err, "fatal: ", err, params);
 	exit(128);
+}
+
+static void error_child(const char *err, va_list params)
+{
+	vwritef(child_err, "error: ", err, params);
 }
 #endif
 
@@ -124,13 +246,13 @@ static int wait_or_whine(pid_t pid, const char *argv0, int silent_exec_failure)
 		if (code == 127) {
 			code = -1;
 			failed_errno = ENOENT;
-			if (!silent_exec_failure)
-				error("cannot run %s: %s", argv0,
-					strerror(ENOENT));
 		}
 	} else {
 		error("waitpid is confused (%s)", argv0);
 	}
+
+	clear_child_for_cleanup(pid);
+
 	errno = failed_errno;
 	return code;
 }
@@ -194,6 +316,7 @@ fail_pipe:
 	}
 
 	trace_argv_printf(cmd->argv, "trace: run_command:");
+	fflush(NULL);
 
 #ifndef WIN32
 {
@@ -201,7 +324,6 @@ fail_pipe:
 	if (pipe(notify_pipe))
 		notify_pipe[0] = notify_pipe[1] = -1;
 
-	fflush(NULL);
 	cmd->pid = fork();
 	if (!cmd->pid) {
 		/*
@@ -214,6 +336,7 @@ fail_pipe:
 			set_cloexec(child_err);
 		}
 		set_die_routine(die_child);
+		set_error_routine(error_child);
 
 		close(notify_pipe[0]);
 		set_cloexec(notify_pipe[1]);
@@ -278,20 +401,22 @@ fail_pipe:
 		} else if (cmd->use_shell) {
 			execv_shell_cmd(cmd->argv);
 		} else {
-			execvp(cmd->argv[0], (char *const*) cmd->argv);
+			sane_execvp(cmd->argv[0], (char *const*) cmd->argv);
 		}
-		/*
-		 * Do not check for cmd->silent_exec_failure; the parent
-		 * process will check it when it sees this exit code.
-		 */
-		if (errno == ENOENT)
+		if (errno == ENOENT) {
+			if (!cmd->silent_exec_failure)
+				error("cannot run %s: %s", cmd->argv[0],
+					strerror(ENOENT));
 			exit(127);
-		else
+		} else {
 			die_errno("cannot exec '%s'", cmd->argv[0]);
+		}
 	}
 	if (cmd->pid < 0)
 		error("cannot fork() for %s: %s", cmd->argv[0],
 			strerror(failed_errno = errno));
+	else if (cmd->clean_on_exit)
+		mark_child_for_cleanup(cmd->pid);
 
 	/*
 	 * Wait for child's execvp. If the execvp succeeds (or if fork()
@@ -312,6 +437,7 @@ fail_pipe:
 		cmd->pid = -1;
 	}
 	close(notify_pipe[0]);
+
 }
 #else
 {
@@ -356,6 +482,8 @@ fail_pipe:
 	failed_errno = errno;
 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
 		error("cannot spawn %s: %s", cmd->argv[0], strerror(errno));
+	if (cmd->clean_on_exit && cmd->pid >= 0)
+		mark_child_for_cleanup(cmd->pid);
 
 	if (cmd->env)
 		free_environ(env);
@@ -431,6 +559,7 @@ static void prepare_run_command_v_opt(struct child_process *cmd,
 	cmd->stdout_to_stderr = opt & RUN_COMMAND_STDOUT_TO_STDERR ? 1 : 0;
 	cmd->silent_exec_failure = opt & RUN_SILENT_EXEC_FAILURE ? 1 : 0;
 	cmd->use_shell = opt & RUN_USING_SHELL ? 1 : 0;
+	cmd->clean_on_exit = opt & RUN_CLEAN_ON_EXIT ? 1 : 0;
 }
 
 int run_command_v_opt(const char **argv, int opt)
@@ -540,6 +669,8 @@ int start_async(struct async *async)
 		exit(!!async->proc(proc_in, proc_out, async->data));
 	}
 
+	mark_child_for_cleanup(async->pid);
+
 	if (need_in)
 		close(fdin[0]);
 	else if (async->in)
@@ -606,26 +737,23 @@ int finish_async(struct async *async)
 int run_hook(const char *index_file, const char *name, ...)
 {
 	struct child_process hook;
-	const char **argv = NULL, *env[2];
+	struct argv_array argv = ARGV_ARRAY_INIT;
+	const char *p, *env[2];
 	char index[PATH_MAX];
 	va_list args;
 	int ret;
-	size_t i = 0, alloc = 0;
 
 	if (access(git_path("hooks/%s", name), X_OK) < 0)
 		return 0;
 
 	va_start(args, name);
-	ALLOC_GROW(argv, i + 1, alloc);
-	argv[i++] = git_path("hooks/%s", name);
-	while (argv[i-1]) {
-		ALLOC_GROW(argv, i + 1, alloc);
-		argv[i++] = va_arg(args, const char *);
-	}
+	argv_array_push(&argv, git_path("hooks/%s", name));
+	while ((p = va_arg(args, const char *)))
+		argv_array_push(&argv, p);
 	va_end(args);
 
 	memset(&hook, 0, sizeof(hook));
-	hook.argv = argv;
+	hook.argv = argv.argv;
 	hook.no_stdin = 1;
 	hook.stdout_to_stderr = 1;
 	if (index_file) {
@@ -636,6 +764,6 @@ int run_hook(const char *index_file, const char *name, ...)
 	}
 
 	ret = run_command(&hook);
-	free(argv);
+	argv_array_clear(&argv);
 	return ret;
 }

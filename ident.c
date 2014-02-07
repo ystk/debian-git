@@ -9,6 +9,12 @@
 
 static char git_default_date[50];
 
+#ifdef NO_GECOS_IN_PWENT
+#define get_gecos(ignored) "&"
+#else
+#define get_gecos(struct_passwd) ((struct_passwd)->pw_gecos)
+#endif
+
 static void copy_gecos(const struct passwd *w, char *name, size_t sz)
 {
 	char *src, *dst;
@@ -20,7 +26,7 @@ static void copy_gecos(const struct passwd *w, char *name, size_t sz)
 	 * with commas.  Also & stands for capitalized form of the login name.
 	 */
 
-	for (len = 0, dst = name, src = w->pw_gecos; len < sz; src++) {
+	for (len = 0, dst = name, src = get_gecos(w); len < sz; src++) {
 		int ch = *src;
 		if (ch != '&') {
 			*dst++ = ch;
@@ -34,6 +40,7 @@ static void copy_gecos(const struct passwd *w, char *name, size_t sz)
 			*dst++ = toupper(*w->pw_name);
 			memcpy(dst, w->pw_name + 1, nlen - 1);
 			dst += nlen - 1;
+			len += nlen;
 		}
 	}
 	if (len < sz)
@@ -41,6 +48,54 @@ static void copy_gecos(const struct passwd *w, char *name, size_t sz)
 	else
 		die("Your parents must have hated you!");
 
+}
+
+static int add_mailname_host(char *buf, size_t len)
+{
+	FILE *mailname;
+
+	mailname = fopen("/etc/mailname", "r");
+	if (!mailname) {
+		if (errno != ENOENT)
+			warning("cannot open /etc/mailname: %s",
+				strerror(errno));
+		return -1;
+	}
+	if (!fgets(buf, len, mailname)) {
+		if (ferror(mailname))
+			warning("cannot read /etc/mailname: %s",
+				strerror(errno));
+		fclose(mailname);
+		return -1;
+	}
+	/* success! */
+	fclose(mailname);
+	return 0;
+}
+
+static void add_domainname(char *buf, size_t len)
+{
+	struct hostent *he;
+	size_t namelen;
+	const char *domainname;
+
+	if (gethostname(buf, len)) {
+		warning("cannot get host name: %s", strerror(errno));
+		strlcpy(buf, "(none)", len);
+		return;
+	}
+	namelen = strlen(buf);
+	if (memchr(buf, '.', namelen))
+		return;
+
+	he = gethostbyname(buf);
+	buf[namelen++] = '.';
+	buf += namelen;
+	len -= namelen;
+	if (he && (domainname = strchr(he->h_name, '.')))
+		strlcpy(buf, domainname + 1, len);
+	else
+		strlcpy(buf, "(none)", len);
 }
 
 static void copy_email(const struct passwd *pw)
@@ -54,35 +109,29 @@ static void copy_email(const struct passwd *pw)
 		die("Your sysadmin must hate you!");
 	memcpy(git_default_email, pw->pw_name, len);
 	git_default_email[len++] = '@';
-	gethostname(git_default_email + len, sizeof(git_default_email) - len);
-	if (!strchr(git_default_email+len, '.')) {
-		struct hostent *he = gethostbyname(git_default_email + len);
-		char *domainname;
 
-		len = strlen(git_default_email);
-		git_default_email[len++] = '.';
-		if (he && (domainname = strchr(he->h_name, '.')))
-			strlcpy(git_default_email + len, domainname + 1,
-				sizeof(git_default_email) - len);
-		else
-			strlcpy(git_default_email + len, "(none)",
-				sizeof(git_default_email) - len);
-	}
+	if (!add_mailname_host(git_default_email + len,
+				sizeof(git_default_email) - len))
+		return;	/* read from "/etc/mailname" (Debian) */
+	add_domainname(git_default_email + len,
+			sizeof(git_default_email) - len);
 }
 
-static void setup_ident(void)
+static void setup_ident(const char **name, const char **emailp)
 {
 	struct passwd *pw = NULL;
 
 	/* Get the name ("gecos") */
-	if (!git_default_name[0]) {
+	if (!*name && !git_default_name[0]) {
 		pw = getpwuid(getuid());
 		if (!pw)
 			die("You don't exist. Go away!");
 		copy_gecos(pw, git_default_name, sizeof(git_default_name));
 	}
+	if (!*name)
+		*name = git_default_name;
 
-	if (!git_default_email[0]) {
+	if (!*emailp && !git_default_email[0]) {
 		const char *email = getenv("EMAIL");
 
 		if (email && email[0]) {
@@ -97,6 +146,8 @@ static void setup_ident(void)
 			copy_email(pw);
 		}
 	}
+	if (!*emailp)
+		*emailp = git_default_email;
 
 	/* And set the default date */
 	if (!git_default_date[0])
@@ -169,6 +220,74 @@ static int copy(char *buf, size_t size, int offset, const char *src)
 	return offset;
 }
 
+/*
+ * Reverse of fmt_ident(); given an ident line, split the fields
+ * to allow the caller to parse it.
+ * Signal a success by returning 0, but date/tz fields of the result
+ * can still be NULL if the input line only has the name/email part
+ * (e.g. reading from a reflog entry).
+ */
+int split_ident_line(struct ident_split *split, const char *line, int len)
+{
+	const char *cp;
+	size_t span;
+	int status = -1;
+
+	memset(split, 0, sizeof(*split));
+
+	split->name_begin = line;
+	for (cp = line; *cp && cp < line + len; cp++)
+		if (*cp == '<') {
+			split->mail_begin = cp + 1;
+			break;
+		}
+	if (!split->mail_begin)
+		return status;
+
+	for (cp = split->mail_begin - 2; line <= cp; cp--)
+		if (!isspace(*cp)) {
+			split->name_end = cp + 1;
+			break;
+		}
+	if (!split->name_end)
+		return status;
+
+	for (cp = split->mail_begin; cp < line + len; cp++)
+		if (*cp == '>') {
+			split->mail_end = cp;
+			break;
+		}
+	if (!split->mail_end)
+		return status;
+
+	for (cp = split->mail_end + 1; cp < line + len && isspace(*cp); cp++)
+		;
+	if (line + len <= cp)
+		goto person_only;
+	split->date_begin = cp;
+	span = strspn(cp, "0123456789");
+	if (!span)
+		goto person_only;
+	split->date_end = split->date_begin + span;
+	for (cp = split->date_end; cp < line + len && isspace(*cp); cp++)
+		;
+	if (line + len <= cp || (*cp != '+' && *cp != '-'))
+		goto person_only;
+	split->tz_begin = cp;
+	span = strspn(cp + 1, "0123456789");
+	if (!span)
+		goto person_only;
+	split->tz_end = split->tz_begin + 1 + span;
+	return 0;
+
+person_only:
+	split->date_begin = NULL;
+	split->date_end = NULL;
+	split->tz_begin = NULL;
+	split->tz_end = NULL;
+	return 0;
+}
+
 static const char *env_hint =
 "\n"
 "*** Please tell me who you are.\n"
@@ -192,11 +311,7 @@ const char *fmt_ident(const char *name, const char *email,
 	int warn_on_no_name = (flag & IDENT_WARN_ON_NO_NAME);
 	int name_addr_only = (flag & IDENT_NO_DATE);
 
-	setup_ident();
-	if (!name)
-		name = git_default_name;
-	if (!email)
-		email = git_default_email;
+	setup_ident(&name, &email);
 
 	if (!*name) {
 		struct passwd *pw;
@@ -217,8 +332,10 @@ const char *fmt_ident(const char *name, const char *email,
 	}
 
 	strcpy(date, git_default_date);
-	if (!name_addr_only && date_str)
-		parse_date(date_str, date, sizeof(date));
+	if (!name_addr_only && date_str && date_str[0]) {
+		if (parse_date(date_str, date, sizeof(date)) < 0)
+			die("invalid date format: %s", date_str);
+	}
 
 	i = copy(buffer, sizeof(buffer), 0, name);
 	i = add_raw(buffer, sizeof(buffer), i, " <");

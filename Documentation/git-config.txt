@@ -44,22 +44,28 @@ a "true" or "false" string for bool), or '--path', which does some
 path expansion (see '--path' below).  If no type specifier is passed, no
 checks or transformations are performed on the value.
 
-The file-option can be one of '--system', '--global' or '--file'
-which specify where the values will be read from or written to.
-The default is to assume the config file of the current repository,
-.git/config unless defined otherwise with GIT_DIR and GIT_CONFIG
-(see <<FILES>>).
+When reading, the values are read from the system, global and
+repository local configuration files by default, and options
+'--system', '--global', '--local' and '--file <filename>' can be
+used to tell the command to read from only that location (see <<FILES>>).
 
-This command will fail if:
+When writing, the new value is written to the repository local
+configuration file by default, and options '--system', '--global',
+'--file <filename>' can be used to tell the command to write to
+that location (you can say '--local' but that is the default).
 
-. The config file is invalid,
-. Can not write to the config file,
-. no section was provided,
-. the section or key is invalid,
-. you try to unset an option which does not exist,
-. you try to unset/set an option for which multiple lines match, or
-. you use '--global' option without $HOME being properly set.
+This command will fail (with exit code ret) if:
 
+. The config file is invalid (ret=3),
+. can not write to the config file (ret=4),
+. no section or name was provided (ret=2),
+. the section or key is invalid (ret=1),
+. you try to unset an option which does not exist (ret=5),
+. you try to unset/set an option for which multiple lines match (ret=5),
+. you try to use an invalid regexp (ret=6), or
+. you use '--global' option without $HOME being properly set (ret=128).
+
+On success, the command returns the exit code 0.
 
 OPTIONS
 -------
@@ -83,8 +89,11 @@ OPTIONS
 	is not exactly one.
 
 --get-regexp::
-	Like --get-all, but interprets the name as a regular expression.
-	Also outputs the key names.
+	Like --get-all, but interprets the name as a regular expression and
+	writes out the key names.  Regular expression matching is currently
+	case-sensitive and done against a canonicalized version of the key
+	in which section and variable names are lowercased, but subsection
+	names are not.
 
 --global::
 	For writing options: write to global ~/.gitconfig file rather than
@@ -176,6 +185,11 @@ See also <<FILES>>.
 	Opens an editor to modify the specified config file; either
 	'--system', '--global', or repository (default).
 
+--includes::
+--no-includes::
+	Respect `include.*` directives in config files when looking up
+	values. Defaults to on.
+
 [[FILES]]
 FILES
 -----
@@ -184,9 +198,7 @@ If not set explicitly with '--file', there are three files where
 'git config' will search for configuration options:
 
 $GIT_DIR/config::
-	Repository specific configuration file. (The filename is
-	of course relative to the repository root, not the working
-	directory.)
+	Repository specific configuration file.
 
 ~/.gitconfig::
 	User-specific configuration file. Also called "global"
@@ -335,15 +347,6 @@ echo "${WS}your whitespace color or blue reverse${RESET}"
 ------------
 
 include::config.txt[]
-
-
-Author
-------
-Written by Johannes Schindelin <Johannes.Schindelin@gmx.de>
-
-Documentation
---------------
-Documentation by Johannes Schindelin, Petr Baudis and the git-list <git@vger.kernel.org>.
 
 GIT
 ---
