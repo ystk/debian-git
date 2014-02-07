@@ -16,6 +16,7 @@
 #include "string-list.h"
 #include "utf8.h"
 #include "parse-options.h"
+#include "quote.h"
 
 static const char *fast_export_usage[] = {
 	"git fast-export [rev-list-opts]",
@@ -24,9 +25,11 @@ static const char *fast_export_usage[] = {
 
 static int progress;
 static enum { ABORT, VERBATIM, WARN, STRIP } signed_tag_mode = ABORT;
-static enum { ERROR, DROP, REWRITE } tag_of_filtered_mode = ABORT;
+static enum { ERROR, DROP, REWRITE } tag_of_filtered_mode = ERROR;
 static int fake_missing_tagger;
+static int use_done_feature;
 static int no_data;
+static int full_tree;
 
 static int parse_opt_signed_tag_mode(const struct option *opt,
 				     const char *arg, int unset)
@@ -48,7 +51,7 @@ static int parse_opt_tag_of_filtered_mode(const struct option *opt,
 					  const char *arg, int unset)
 {
 	if (unset || !strcmp(arg, "abort"))
-		tag_of_filtered_mode = ABORT;
+		tag_of_filtered_mode = ERROR;
 	else if (!strcmp(arg, "drop"))
 		tag_of_filtered_mode = DROP;
 	else if (!strcmp(arg, "rewrite"))
@@ -147,23 +150,74 @@ static void handle_object(const unsigned char *sha1)
 	free(buf);
 }
 
+static int depth_first(const void *a_, const void *b_)
+{
+	const struct diff_filepair *a = *((const struct diff_filepair **)a_);
+	const struct diff_filepair *b = *((const struct diff_filepair **)b_);
+	const char *name_a, *name_b;
+	int len_a, len_b, len;
+	int cmp;
+
+	name_a = a->one ? a->one->path : a->two->path;
+	name_b = b->one ? b->one->path : b->two->path;
+
+	len_a = strlen(name_a);
+	len_b = strlen(name_b);
+	len = (len_a < len_b) ? len_a : len_b;
+
+	/* strcmp will sort 'd' before 'd/e', we want 'd/e' before 'd' */
+	cmp = memcmp(name_a, name_b, len);
+	if (cmp)
+		return cmp;
+	cmp = len_b - len_a;
+	if (cmp)
+		return cmp;
+	/*
+	 * Move 'R'ename entries last so that all references of the file
+	 * appear in the output before it is renamed (e.g., when a file
+	 * was copied and renamed in the same commit).
+	 */
+	return (a->status == 'R') - (b->status == 'R');
+}
+
+static void print_path(const char *path)
+{
+	int need_quote = quote_c_style(path, NULL, NULL, 0);
+	if (need_quote)
+		quote_c_style(path, NULL, stdout, 0);
+	else
+		printf("%s", path);
+}
+
 static void show_filemodify(struct diff_queue_struct *q,
 			    struct diff_options *options, void *data)
 {
 	int i;
+
+	/*
+	 * Handle files below a directory first, in case they are all deleted
+	 * and the directory changes to a file or symlink.
+	 */
+	qsort(q->queue, q->nr, sizeof(q->queue[0]), depth_first);
+
 	for (i = 0; i < q->nr; i++) {
 		struct diff_filespec *ospec = q->queue[i]->one;
 		struct diff_filespec *spec = q->queue[i]->two;
 
 		switch (q->queue[i]->status) {
 		case DIFF_STATUS_DELETED:
-			printf("D %s\n", spec->path);
+			printf("D ");
+			print_path(spec->path);
+			putchar('\n');
 			break;
 
 		case DIFF_STATUS_COPIED:
 		case DIFF_STATUS_RENAMED:
-			printf("%c \"%s\" \"%s\"\n", q->queue[i]->status,
-			       ospec->path, spec->path);
+			printf("%c ", q->queue[i]->status);
+			print_path(ospec->path);
+			putchar(' ');
+			print_path(spec->path);
+			putchar('\n');
 
 			if (!hashcmp(ospec->sha1, spec->sha1) &&
 			    ospec->mode == spec->mode)
@@ -178,13 +232,15 @@ static void show_filemodify(struct diff_queue_struct *q,
 			 * output the SHA-1 verbatim.
 			 */
 			if (no_data || S_ISGITLINK(spec->mode))
-				printf("M %06o %s %s\n", spec->mode,
-				       sha1_to_hex(spec->sha1), spec->path);
+				printf("M %06o %s ", spec->mode,
+				       sha1_to_hex(spec->sha1));
 			else {
 				struct object *object = lookup_object(spec->sha1);
-				printf("M %06o :%d %s\n", spec->mode,
-				       get_object_mark(object), spec->path);
+				printf("M %06o :%d ", spec->mode,
+				       get_object_mark(object));
 			}
+			print_path(spec->path);
+			putchar('\n');
 			break;
 
 		default:
@@ -241,7 +297,8 @@ static void handle_commit(struct commit *commit, struct rev_info *rev)
 		message += 2;
 
 	if (commit->parents &&
-	    get_object_mark(&commit->parents->item->object) != 0) {
+	    get_object_mark(&commit->parents->item->object) != 0 &&
+	    !full_tree) {
 		parse_commit(commit->parents->item);
 		diff_tree_sha1(commit->parents->item->tree->object.sha1,
 			       commit->tree->object.sha1, "", &rev->diffopt);
@@ -281,6 +338,8 @@ static void handle_commit(struct commit *commit, struct rev_info *rev)
 		i++;
 	}
 
+	if (full_tree)
+		printf("deleteall\n");
 	log_tree_diff_flush(rev);
 	rev->diffopt.output_format = saved_output_format;
 
@@ -565,8 +624,8 @@ static void import_marks(char *input_file)
 int cmd_fast_export(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
-	struct object_array commits = { 0, 0, NULL };
-	struct string_list extra_refs = { NULL, 0, 0, 0 };
+	struct object_array commits = OBJECT_ARRAY_INIT;
+	struct string_list extra_refs = STRING_LIST_INIT_NODUP;
 	struct commit *commit;
 	char *export_filename = NULL, *import_filename = NULL;
 	struct option options[] = {
@@ -578,15 +637,17 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 		OPT_CALLBACK(0, "tag-of-filtered-object", &tag_of_filtered_mode, "mode",
 			     "select handling of tags that tag filtered objects",
 			     parse_opt_tag_of_filtered_mode),
-		OPT_STRING(0, "export-marks", &export_filename, "FILE",
+		OPT_STRING(0, "export-marks", &export_filename, "file",
 			     "Dump marks to this file"),
-		OPT_STRING(0, "import-marks", &import_filename, "FILE",
+		OPT_STRING(0, "import-marks", &import_filename, "file",
 			     "Import marks from this file"),
 		OPT_BOOLEAN(0, "fake-missing-tagger", &fake_missing_tagger,
 			     "Fake a tagger when tags lack one"),
-		{ OPTION_NEGBIT, 0, "data", &no_data, NULL,
-			"Skip output of blob data",
-			PARSE_OPT_NOARG | PARSE_OPT_NEGHELP, NULL, 1 },
+		OPT_BOOLEAN(0, "full-tree", &full_tree,
+			     "Output full tree for each commit"),
+		OPT_BOOLEAN(0, "use-done-feature", &use_done_feature,
+			     "Use the done feature to terminate the stream"),
+		OPT_BOOL(0, "no-data", &no_data, "Skip output of blob data"),
 		OPT_END()
 	};
 
@@ -605,8 +666,14 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 	if (argc > 1)
 		usage_with_options (fast_export_usage, options);
 
+	if (use_done_feature)
+		printf("feature done\n");
+
 	if (import_filename)
 		import_marks(import_filename);
+
+	if (import_filename && revs.prune_data.nr)
+		full_tree = 1;
 
 	get_tags_and_duplicates(&revs.pending, &extra_refs);
 
@@ -628,6 +695,9 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 
 	if (export_filename)
 		export_marks(export_filename);
+
+	if (use_done_feature)
+		printf("done\n");
 
 	return 0;
 }

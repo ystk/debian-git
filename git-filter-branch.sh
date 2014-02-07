@@ -12,7 +12,7 @@
 
 functions=$(cat << \EOF
 warn () {
-        echo "$*" >&2
+	echo "$*" >&2
 }
 
 map()
@@ -98,19 +98,17 @@ set_ident () {
 }
 
 USAGE="[--env-filter <command>] [--tree-filter <command>]
-            [--index-filter <command>] [--parent-filter <command>]
-            [--msg-filter <command>] [--commit-filter <command>]
-            [--tag-name-filter <command>] [--subdirectory-filter <directory>]
-            [--original <namespace>] [-d <directory>] [-f | --force]
-            [<rev-list options>...]"
+	[--index-filter <command>] [--parent-filter <command>]
+	[--msg-filter <command>] [--commit-filter <command>]
+	[--tag-name-filter <command>] [--subdirectory-filter <directory>]
+	[--original <namespace>] [-d <directory>] [-f | --force]
+	[<rev-list options>...]"
 
 OPTIONS_SPEC=
 . git-sh-setup
 
 if [ "$(is_bare_repository)" = false ]; then
-	git diff-files --ignore-submodules --quiet &&
-	git diff-index --cached --quiet HEAD -- ||
-	die "Cannot rewrite branch(es) with a dirty working directory."
+	require_clean_work_tree 'rewrite branches'
 fi
 
 tempdir=.git-rewrite
@@ -139,6 +137,7 @@ do
 		continue
 		;;
 	--remap-to-ancestor)
+		# deprecated ($remap_to_ancestor is set now automatically)
 		shift
 		remap_to_ancestor=t
 		continue
@@ -265,7 +264,14 @@ mkdir ../map || die "Could not create map/ directory"
 
 # we need "--" only if there are no path arguments in $@
 nonrevs=$(git rev-parse --no-revs "$@") || exit
-test -z "$nonrevs" && dashdash=-- || dashdash=
+if test -z "$nonrevs"
+then
+	dashdash=--
+else
+	dashdash=
+	remap_to_ancestor=t
+fi
+
 rev_args=$(git rev-parse --revs-only "$@")
 
 case "$filter_subdir" in
@@ -355,7 +361,7 @@ while read commit parents; do
 	sed -e '1,/^$/d' <../commit | \
 		eval "$filter_msg" > ../message ||
 			die "msg filter failed: $filter_msg"
-	@SHELL_PATH@ -c "$filter_commit" "git commit-tree" \
+	workdir=$workdir @SHELL_PATH@ -c "$filter_commit" "git commit-tree" \
 		$(git write-tree) $parentstr < ../message > ../map/$commit ||
 			die "could not write rewritten commit"
 done <../revs

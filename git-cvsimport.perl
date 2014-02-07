@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 
 # This tool is copyright (c) 2005, Matthias Urlichs.
 # It is released under the Gnu Public License, version 2.
@@ -13,6 +13,7 @@
 # The head revision is on branch "origin" by default.
 # You can change that with the '-o' option.
 
+use 5.008;
 use strict;
 use warnings;
 use Getopt::Long;
@@ -89,23 +90,40 @@ sub write_author_info($) {
 }
 
 # convert getopts specs for use by git config
+my %longmap = (
+	'A:' => 'authors-file',
+	'M:' => 'merge-regex',
+	'P:' => undef,
+	'R' => 'track-revisions',
+	'S:' => 'ignore-paths',
+);
+
 sub read_repo_config {
-    # Split the string between characters, unless there is a ':'
-    # So "abc:de" becomes ["a", "b", "c:", "d", "e"]
+	# Split the string between characters, unless there is a ':'
+	# So "abc:de" becomes ["a", "b", "c:", "d", "e"]
 	my @opts = split(/ *(?!:)/, shift);
 	foreach my $o (@opts) {
 		my $key = $o;
 		$key =~ s/://g;
 		my $arg = 'git config';
 		$arg .= ' --bool' if ($o !~ /:$/);
+		my $ckey = $key;
 
-        chomp(my $tmp = `$arg --get cvsimport.$key`);
+		if (exists $longmap{$o}) {
+			# An uppercase option like -R cannot be
+			# expressed in the configuration, as the
+			# variable names are downcased.
+			$ckey = $longmap{$o};
+			next if (! defined $ckey);
+			$ckey =~ s/-//g;
+		}
+		chomp(my $tmp = `$arg --get cvsimport.$ckey`);
 		if ($tmp && !($arg =~ /--bool/ && $tmp eq 'false')) {
-            no strict 'refs';
-            my $opt_name = "opt_" . $key;
-            if (!$$opt_name) {
-                $$opt_name = $tmp;
-            }
+			no strict 'refs';
+			my $opt_name = "opt_" . $key;
+			if (!$$opt_name) {
+				$$opt_name = $tmp;
+			}
 		}
 	}
 }
@@ -209,6 +227,31 @@ sub new {
 	return $self;
 }
 
+sub find_password_entry {
+	my ($cvspass, @cvsroot) = @_;
+	my ($file, $delim) = @$cvspass;
+	my $pass;
+	local ($_);
+
+	if (open(my $fh, $file)) {
+		# :pserver:cvs@mea.tmt.tele.fi:/cvsroot/zmailer Ah<Z
+		CVSPASSFILE:
+		while (<$fh>) {
+			chomp;
+			s/^\/\d+\s+//;
+			my ($w, $p) = split($delim,$_,2);
+			for my $cvsroot (@cvsroot) {
+				if ($w eq $cvsroot) {
+					$pass = $p;
+					last CVSPASSFILE;
+				}
+			}
+		}
+		close($fh);
+	}
+	return $pass;
+}
+
 sub conn {
 	my $self = shift;
 	my $repo = $self->{'fullrep'};
@@ -241,19 +284,23 @@ sub conn {
 		if ($pass) {
 			$pass = $self->_scramble($pass);
 		} else {
-			open(H,$ENV{'HOME'}."/.cvspass") and do {
-				# :pserver:cvs@mea.tmt.tele.fi:/cvsroot/zmailer Ah<Z
-				while (<H>) {
-					chomp;
-					s/^\/\d+\s+//;
-					my ($w,$p) = split(/\s/,$_,2);
-					if ($w eq $rr or $w eq $rr2) {
-						$pass = $p;
-						last;
-					}
+			my @cvspass = ([$ENV{'HOME'}."/.cvspass", qr/\s/],
+				       [$ENV{'HOME'}."/.cvs/cvspass", qr/=/]);
+			my @loc = ();
+			foreach my $cvspass (@cvspass) {
+				my $p = find_password_entry($cvspass, $rr, $rr2);
+				if ($p) {
+					push @loc, $cvspass->[0];
+					$pass = $p;
 				}
-			};
-			$pass = "A" unless $pass;
+			}
+
+			if (1 < @loc) {
+				die("Multiple cvs password files have ".
+				    "entries for CVSROOT $opt_d: @loc");
+			} elsif (!$pass) {
+				$pass = "A";
+			}
 		}
 
 		my ($s, $rep);
@@ -348,7 +395,9 @@ sub conn {
 	$self->{'socketo'}->write("valid-requests\n");
 	$self->{'socketo'}->flush();
 
-	chomp(my $rep=$self->readline());
+	my $rep=$self->readline();
+	die "Failed to read from server" unless defined $rep;
+	chomp($rep);
 	if ($rep !~ s/^Valid-requests\s*//) {
 		$rep="<unknown>" unless $rep;
 		die "Expected Valid-requests from server, but got: $rep\n";
@@ -611,7 +660,7 @@ my %index; # holds filenames of one index per branch
 unless (-d $git_dir) {
 	system(qw(git init));
 	die "Cannot init the GIT db at $git_tree: $?\n" if $?;
-	system(qw(git read-tree));
+	system(qw(git read-tree --empty));
 	die "Cannot init an empty tree: $?\n" if $?;
 
 	$last_branch = $opt_o;

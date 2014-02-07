@@ -16,7 +16,7 @@ code and message.'
 # snapshot settings
 
 test_expect_success 'setup' "
-	test_commit 'SnapshotTests' 'i can has snapshot?'
+	test_commit 'SnapshotTests' 'i can has snapshot'
 "
 
 
@@ -126,7 +126,6 @@ test_expect_success 'load checking: load too high (default action)' '
 	grep "Status: 503 Service Unavailable" gitweb.headers &&
 	grep "503 - The load average on the server is too high" gitweb.body
 '
-test_debug 'cat gitweb.log' # just in case
 test_debug 'cat gitweb.headers'
 
 # turn off load checking
@@ -134,5 +133,15 @@ cat >>gitweb_config.perl <<\EOF
 our $maxload = undef;
 EOF
 
+
+# ----------------------------------------------------------------------
+# invalid arguments
+
+test_expect_success 'invalid arguments: invalid regexp (in project search)' '
+	gitweb_run "a=project_list;s=*\.git;sr=1" &&
+	grep "Status: 400" gitweb.headers &&
+	grep "400 - Invalid.*regexp" gitweb.body
+'
+test_debug 'cat gitweb.headers'
 
 test_done

@@ -39,9 +39,15 @@ git_broken_path_fix () {
 
 # @@BROKEN_PATH_FIX@@
 
-die() {
-	echo >&2 "$@"
-	exit 1
+die () {
+	die_with_status 1 "$@"
+}
+
+die_with_status () {
+	status=$1
+	shift
+	echo >&2 "$*"
+	exit "$status"
 }
 
 GIT_QUIET=
@@ -84,7 +90,7 @@ $LONG_USAGE"
 	fi
 
 	case "$1" in
-		-h|--h|--he|--hel|--help)
+		-h)
 		echo "$LONG_USAGE"
 		exit
 	esac
@@ -140,9 +146,45 @@ cd_to_toplevel () {
 	}
 }
 
+require_work_tree_exists () {
+	if test "z$(git rev-parse --is-bare-repository)" != zfalse
+	then
+		die "fatal: $0 cannot be used without a working tree."
+	fi
+}
+
 require_work_tree () {
 	test "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ||
 	die "fatal: $0 cannot be used without a working tree."
+}
+
+require_clean_work_tree () {
+	git rev-parse --verify HEAD >/dev/null || exit 1
+	git update-index -q --ignore-submodules --refresh
+	err=0
+
+	if ! git diff-files --quiet --ignore-submodules
+	then
+		echo >&2 "Cannot $1: You have unstaged changes."
+		err=1
+	fi
+
+	if ! git diff-index --cached --quiet --ignore-submodules HEAD --
+	then
+		if [ $err = 0 ]
+		then
+		    echo >&2 "Cannot $1: Your index contains uncommitted changes."
+		else
+		    echo >&2 "Additionally, your index contains uncommitted changes."
+		fi
+		err=1
+	fi
+
+	if [ $err = 1 ]
+	then
+		test -n "$2" && echo >&2 "$2"
+		exit 1
+	fi
 }
 
 get_author_ident_from_commit () {
@@ -151,17 +193,14 @@ get_author_ident_from_commit () {
 		s/'\''/'\''\\'\'\''/g
 		h
 		s/^author \([^<]*\) <[^>]*> .*$/\1/
-		s/'\''/'\''\'\'\''/g
 		s/.*/GIT_AUTHOR_NAME='\''&'\''/p
 
 		g
 		s/^author [^<]* <\([^>]*\)> .*$/\1/
-		s/'\''/'\''\'\'\''/g
 		s/.*/GIT_AUTHOR_EMAIL='\''&'\''/p
 
 		g
-		s/^author [^<]* <[^>]*> \(.*\)$/\1/
-		s/'\''/'\''\'\'\''/g
+		s/^author [^<]* <[^>]*> \(.*\)$/@\1/
 		s/.*/GIT_AUTHOR_DATE='\''&'\''/p
 
 		q
@@ -209,5 +248,20 @@ case $(uname -s) in
 	find () {
 		/usr/bin/find "$@"
 	}
+	is_absolute_path () {
+		case "$1" in
+		[/\\]* | [A-Za-z]:*)
+			return 0 ;;
+		esac
+		return 1
+	}
 	;;
+*)
+	is_absolute_path () {
+		case "$1" in
+		/*)
+			return 0 ;;
+		esac
+		return 1
+	}
 esac

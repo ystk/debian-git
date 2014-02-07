@@ -129,8 +129,9 @@ const char *show_date_relative(unsigned long time, int tz,
 	}
 	/* Give years and months for 5 years or so */
 	if (diff < 1825) {
-		unsigned long years = diff / 365;
-		unsigned long months = (diff % 365 + 15) / 30;
+		unsigned long totalmonths = (diff * 12 * 2 + 365) / (365 * 2);
+		unsigned long years = totalmonths / 12;
+		unsigned long months = totalmonths % 12;
 		int n;
 		n = snprintf(timebuf, timebuf_size, "%lu year%s",
 				years, (years > 1 ? "s" : ""));
@@ -551,23 +552,35 @@ static int match_digit(const char *date, struct tm *tm, int *offset, int *tm_gmt
 static int match_tz(const char *date, int *offp)
 {
 	char *end;
-	int offset = strtoul(date+1, &end, 10);
-	int min, hour;
-	int n = end - date - 1;
+	int hour = strtoul(date + 1, &end, 10);
+	int n = end - (date + 1);
+	int min = 0;
 
-	min = offset % 100;
-	hour = offset / 100;
+	if (n == 4) {
+		/* hhmm */
+		min = hour % 100;
+		hour = hour / 100;
+	} else if (n != 2) {
+		min = 99; /* random crap */
+	} else if (*end == ':') {
+		/* hh:mm? */
+		min = strtoul(end + 1, &end, 10);
+		if (end - (date + 1) != 5)
+			min = 99; /* random crap */
+	} /* otherwise we parsed "hh" */
 
 	/*
-	 * Don't accept any random crap.. At least 3 digits, and
-	 * a valid minute. We might want to check that the minutes
-	 * are divisible by 30 or something too.
+	 * Don't accept any random crap. Even though some places have
+	 * offset larger than 12 hours (e.g. Pacific/Kiritimati is at
+	 * UTC+14), there is something wrong if hour part is much
+	 * larger than that. We might also want to check that the
+	 * minutes are divisible by 15 or something too. (Offset of
+	 * Kathmandu, Nepal is UTC+5:45)
 	 */
-	if (min < 60 && n > 2) {
-		offset = hour*60+min;
+	if (min < 60 && hour < 24) {
+		int offset = hour * 60 + min;
 		if (*date == '-')
 			offset = -offset;
-
 		*offp = offset;
 	}
 	return end - date;
@@ -584,9 +597,36 @@ static int date_string(unsigned long date, int offset, char *buf, int len)
 	return snprintf(buf, len, "%lu %c%02d%02d", date, sign, offset / 60, offset % 60);
 }
 
+/*
+ * Parse a string like "0 +0000" as ancient timestamp near epoch, but
+ * only when it appears not as part of any other string.
+ */
+static int match_object_header_date(const char *date, unsigned long *timestamp, int *offset)
+{
+	char *end;
+	unsigned long stamp;
+	int ofs;
+
+	if (*date < '0' || '9' <= *date)
+		return -1;
+	stamp = strtoul(date, &end, 10);
+	if (*end != ' ' || stamp == ULONG_MAX || (end[1] != '+' && end[1] != '-'))
+		return -1;
+	date = end + 2;
+	ofs = strtol(date, &end, 10);
+	if ((*end != '\0' && (*end != '\n')) || end != date + 4)
+		return -1;
+	ofs = (ofs / 100) * 60 + (ofs % 100);
+	if (date[-1] == '-')
+		ofs = -ofs;
+	*timestamp = stamp;
+	*offset = ofs;
+	return 0;
+}
+
 /* Gr. strptime is crap for this; it doesn't have a way to require RFC2822
    (i.e. English) day/month names, and it doesn't work correctly with %z. */
-int parse_date_toffset(const char *date, unsigned long *timestamp, int *offset)
+int parse_date_basic(const char *date, unsigned long *timestamp, int *offset)
 {
 	struct tm tm;
 	int tm_gmt;
@@ -609,6 +649,9 @@ int parse_date_toffset(const char *date, unsigned long *timestamp, int *offset)
 	*offset = -1;
 	tm_gmt = 0;
 
+	if (*date == '@' &&
+	    !match_object_header_date(date + 1, timestamp, offset))
+		return 0; /* success */
 	for (;;) {
 		int match = 0;
 		unsigned char c = *date;
@@ -642,17 +685,16 @@ int parse_date_toffset(const char *date, unsigned long *timestamp, int *offset)
 
 	if (!tm_gmt)
 		*timestamp -= *offset * 60;
-	return 1; /* success */
+	return 0; /* success */
 }
 
 int parse_date(const char *date, char *result, int maxlen)
 {
 	unsigned long timestamp;
 	int offset;
-	if (parse_date_toffset(date, &timestamp, &offset) > 0)
-		return date_string(timestamp, offset, result, maxlen);
-	else
+	if (parse_date_basic(date, &timestamp, &offset))
 		return -1;
+	return date_string(timestamp, offset, result, maxlen);
 }
 
 enum date_mode parse_date_format(const char *format)
@@ -1004,9 +1046,8 @@ unsigned long approxidate_relative(const char *date, const struct timeval *tv)
 	int offset;
 	int errors = 0;
 
-	if (parse_date_toffset(date, &timestamp, &offset) > 0)
+	if (!parse_date_basic(date, &timestamp, &offset))
 		return timestamp;
-
 	return approxidate_str(date, tv, &errors);
 }
 
@@ -1019,7 +1060,7 @@ unsigned long approxidate_careful(const char *date, int *error_ret)
 	if (!error_ret)
 		error_ret = &dummy;
 
-	if (parse_date_toffset(date, &timestamp, &offset) > 0) {
+	if (!parse_date_basic(date, &timestamp, &offset)) {
 		*error_ret = 0;
 		return timestamp;
 	}

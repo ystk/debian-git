@@ -1,4 +1,4 @@
-#include "cache.h"
+#include "builtin.h"
 #include "commit.h"
 #include "refs.h"
 #include "pkt-line.h"
@@ -48,6 +48,7 @@ static int pack_objects(int fd, struct ref *refs, struct extra_have_objects *ext
 		NULL,
 		NULL,
 		NULL,
+		NULL,
 	};
 	struct child_process po;
 	int i;
@@ -57,8 +58,10 @@ static int pack_objects(int fd, struct ref *refs, struct extra_have_objects *ext
 		argv[i++] = "--thin";
 	if (args->use_ofs_delta)
 		argv[i++] = "--delta-base-offset";
-	if (args->quiet)
+	if (args->quiet || !args->progress)
 		argv[i++] = "-q";
+	if (args->progress)
+		argv[i++] = "--progress";
 	memset(&po, 0, sizeof(po));
 	po.argv = argv;
 	po.in = -1;
@@ -101,7 +104,7 @@ static int pack_objects(int fd, struct ref *refs, struct extra_have_objects *ext
 	}
 
 	if (finish_command(&po))
-		return error("pack-objects died with strange error");
+		return -1;
 	return 0;
 }
 
@@ -225,8 +228,11 @@ static void print_helper_status(struct ref *ref)
 
 static int sideband_demux(int in, int out, void *data)
 {
-	int *fd = data;
-	int ret = recv_sideband("send-pack", fd[0], out);
+	int *fd = data, ret;
+#ifdef NO_PTHREADS
+	close(fd[1]);
+#endif
+	ret = recv_sideband("send-pack", fd[0], out);
 	close(out);
 	return ret;
 }
@@ -244,6 +250,7 @@ int send_pack(struct send_pack_args *args,
 	int allow_deleting_refs = 0;
 	int status_report = 0;
 	int use_sideband = 0;
+	int quiet_supported = 0;
 	unsigned cmds_sent = 0;
 	int ret;
 	struct async demux;
@@ -257,6 +264,8 @@ int send_pack(struct send_pack_args *args,
 		args->use_ofs_delta = 1;
 	if (server_supports("side-band-64k"))
 		use_sideband = 1;
+	if (server_supports("quiet"))
+		quiet_supported = 1;
 
 	if (!remote_refs) {
 		fprintf(stderr, "No refs in common and none specified; doing nothing.\n"
@@ -294,16 +303,18 @@ int send_pack(struct send_pack_args *args,
 		} else {
 			char *old_hex = sha1_to_hex(ref->old_sha1);
 			char *new_hex = sha1_to_hex(ref->new_sha1);
+			int quiet = quiet_supported && (args->quiet || !args->progress);
 
-			if (!cmds_sent && (status_report || use_sideband)) {
-				packet_buf_write(&req_buf, "%s %s %s%c%s%s",
-					old_hex, new_hex, ref->name, 0,
-					status_report ? " report-status" : "",
-					use_sideband ? " side-band-64k" : "");
+			if (!cmds_sent && (status_report || use_sideband || args->quiet)) {
+				packet_buf_write(&req_buf, "%s %s %s%c%s%s%s",
+						 old_hex, new_hex, ref->name, 0,
+						 status_report ? " report-status" : "",
+						 use_sideband ? " side-band-64k" : "",
+						 quiet ? " quiet" : "");
 			}
 			else
 				packet_buf_write(&req_buf, "%s %s %s",
-					old_hex, new_hex, ref->name);
+						 old_hex, new_hex, ref->name);
 			ref->status = status_report ?
 				REF_STATUS_EXPECTING_REPORT :
 				REF_STATUS_OK;
@@ -328,7 +339,7 @@ int send_pack(struct send_pack_args *args,
 		demux.data = fd;
 		demux.out = -1;
 		if (start_async(&demux))
-			die("receive-pack: unable to fork off sideband demultiplexer");
+			die("send-pack: unable to fork off sideband demultiplexer");
 		in = demux.out;
 	}
 
@@ -336,6 +347,10 @@ int send_pack(struct send_pack_args *args,
 		if (pack_objects(out, remote_refs, extra_have, args) < 0) {
 			for (ref = remote_refs; ref; ref = ref->next)
 				ref->status = REF_STATUS_NONE;
+			if (args->stateless_rpc)
+				close(out);
+			if (git_connection_is_socket(conn))
+				shutdown(fd[0], SHUT_WR);
 			if (use_sideband)
 				finish_async(&demux);
 			return -1;
@@ -395,6 +410,7 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 	const char *receivepack = "git-receive-pack";
 	int flags;
 	int nonfastforward = 0;
+	int progress = -1;
 
 	argv++;
 	for (i = 1; i < argc; i++, argv++) {
@@ -429,8 +445,20 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 				args.force_update = 1;
 				continue;
 			}
+			if (!strcmp(arg, "--quiet")) {
+				args.quiet = 1;
+				continue;
+			}
 			if (!strcmp(arg, "--verbose")) {
 				args.verbose = 1;
+				continue;
+			}
+			if (!strcmp(arg, "--progress")) {
+				progress = 1;
+				continue;
+			}
+			if (!strcmp(arg, "--no-progress")) {
+				progress = 0;
 				continue;
 			}
 			if (!strcmp(arg, "--thin")) {
@@ -473,6 +501,10 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		}
 	}
 
+	if (progress == -1)
+		progress = !args.quiet && isatty(2);
+	args.progress = progress;
+
 	if (args.stateless_rpc) {
 		conn = NULL;
 		fd[0] = 0;
@@ -484,8 +516,7 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 
 	memset(&extra_have, 0, sizeof(extra_have));
 
-	get_remote_heads(fd[0], &remote_refs, 0, NULL, REF_NORMAL,
-			 &extra_have);
+	get_remote_heads(fd[0], &remote_refs, REF_NORMAL, &extra_have);
 
 	transport_verify_remote_names(nr_refspecs, refspecs);
 
@@ -499,7 +530,7 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		flags |= MATCH_REFS_MIRROR;
 
 	/* match them up */
-	if (match_refs(local_refs, &remote_refs, nr_refspecs, refspecs, flags))
+	if (match_push_refs(local_refs, &remote_refs, nr_refspecs, refspecs, flags))
 		return -1;
 
 	set_ref_status_for_push(remote_refs, args.send_mirror,

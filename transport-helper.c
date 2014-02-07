@@ -8,11 +8,12 @@
 #include "quote.h"
 #include "remote.h"
 #include "string-list.h"
+#include "thread-utils.h"
+#include "sigchain.h"
 
 static int debug;
 
-struct helper_data
-{
+struct helper_data {
 	const char *name;
 	struct child_process *helper;
 	FILE *out;
@@ -23,6 +24,8 @@ struct helper_data
 		push : 1,
 		connect : 1,
 		no_disconnect_req : 1;
+	char *export_marks;
+	char *import_marks;
 	/* These go from remote name (as in "list") to private name */
 	struct refspec *refspecs;
 	int refspec_nr;
@@ -76,7 +79,7 @@ static void write_constant(int fd, const char *str)
 		die_errno("Full write to remote helper failed");
 }
 
-const char *remove_ext_force(const char *url)
+static const char *remove_ext_force(const char *url)
 {
 	if (url) {
 		const char *colon = strchr(url, ':');
@@ -105,6 +108,12 @@ static struct child_process *get_helper(struct transport *transport)
 	int refspec_alloc = 0;
 	int duped;
 	int code;
+	char git_dir_buf[sizeof(GIT_DIR_ENVIRONMENT) + PATH_MAX + 1];
+	const char *helper_env[] = {
+		git_dir_buf,
+		NULL
+	};
+
 
 	if (data->helper)
 		return data->helper;
@@ -120,6 +129,10 @@ static struct child_process *get_helper(struct transport *transport)
 	helper->argv[2] = remove_ext_force(transport->url);
 	helper->git_cmd = 0;
 	helper->silent_exec_failure = 1;
+
+	snprintf(git_dir_buf, sizeof(git_dir_buf), "%s=%s", GIT_DIR_ENVIRONMENT, get_git_dir());
+	helper->env = helper_env;
+
 	code = start_command(helper);
 	if (code < 0 && errno == ENOENT)
 		die("Unable to find remote helper for '%s'", data->name);
@@ -171,14 +184,19 @@ static struct child_process *get_helper(struct transport *transport)
 			ALLOC_GROW(refspecs,
 				   refspec_nr + 1,
 				   refspec_alloc);
-			refspecs[refspec_nr++] = strdup(buf.buf + strlen("refspec "));
+			refspecs[refspec_nr++] = xstrdup(capname + strlen("refspec "));
 		} else if (!strcmp(capname, "connect")) {
 			data->connect = 1;
-		} else if (!strcmp(buf.buf, "gitdir")) {
-			struct strbuf gitdir = STRBUF_INIT;
-			strbuf_addf(&gitdir, "gitdir %s\n", get_git_dir());
-			sendline(data, &gitdir);
-			strbuf_release(&gitdir);
+		} else if (!prefixcmp(capname, "export-marks ")) {
+			struct strbuf arg = STRBUF_INIT;
+			strbuf_addstr(&arg, "--export-marks=");
+			strbuf_addstr(&arg, capname + strlen("export-marks "));
+			data->export_marks = strbuf_detach(&arg, NULL);
+		} else if (!prefixcmp(capname, "import-marks")) {
+			struct strbuf arg = STRBUF_INIT;
+			strbuf_addstr(&arg, "--import-marks=");
+			strbuf_addstr(&arg, capname + strlen("import-marks "));
+			data->import_marks = strbuf_detach(&arg, NULL);
 		} else if (mandatory) {
 			die("Unknown mandatory capability %s. This remote "
 			    "helper probably needs newer version of Git.\n",
@@ -203,25 +221,32 @@ static struct child_process *get_helper(struct transport *transport)
 static int disconnect_helper(struct transport *transport)
 {
 	struct helper_data *data = transport->data;
-	struct strbuf buf = STRBUF_INIT;
+	int res = 0;
 
 	if (data->helper) {
 		if (debug)
 			fprintf(stderr, "Debug: Disconnecting.\n");
 		if (!data->no_disconnect_req) {
-			strbuf_addf(&buf, "\n");
-			sendline(data, &buf);
+			/*
+			 * Ignore write errors; there's nothing we can do,
+			 * since we're about to close the pipe anyway. And the
+			 * most likely error is EPIPE due to the helper dying
+			 * to report an error itself.
+			 */
+			sigchain_push(SIGPIPE, SIG_IGN);
+			xwrite(data->helper->in, "\n", 1);
+			sigchain_pop(SIGPIPE);
 		}
 		close(data->helper->in);
 		close(data->helper->out);
 		fclose(data->out);
-		finish_command(data->helper);
+		res = finish_command(data->helper);
 		free((char *)data->helper->argv[0]);
 		free(data->helper->argv);
 		free(data->helper);
 		data->helper = NULL;
 	}
-	return 0;
+	return res;
 }
 
 static const char *unsupported_options[] = {
@@ -299,12 +324,13 @@ static void standard_options(struct transport *t)
 
 static int release_helper(struct transport *transport)
 {
+	int res = 0;
 	struct helper_data *data = transport->data;
 	free_refspec(data->refspec_nr, data->refspecs);
 	data->refspecs = NULL;
-	disconnect_helper(transport);
+	res = disconnect_helper(transport);
 	free(transport->data);
-	return 0;
+	return res;
 }
 
 static int fetch_with_fetch(struct transport *transport,
@@ -362,10 +388,9 @@ static int get_importer(struct transport *transport, struct child_process *fasti
 
 static int get_exporter(struct transport *transport,
 			struct child_process *fastexport,
-			const char *export_marks,
-			const char *import_marks,
 			struct string_list *revlist_args)
 {
+	struct helper_data *data = transport->data;
 	struct child_process *helper = get_helper(transport);
 	int argc = 0, i;
 	memset(fastexport, 0, sizeof(*fastexport));
@@ -373,12 +398,13 @@ static int get_exporter(struct transport *transport,
 	/* we need to duplicate helper->in because we want to use it after
 	 * fastexport is done with it. */
 	fastexport->out = dup(helper->in);
-	fastexport->argv = xcalloc(4 + revlist_args->nr, sizeof(*fastexport->argv));
+	fastexport->argv = xcalloc(5 + revlist_args->nr, sizeof(*fastexport->argv));
 	fastexport->argv[argc++] = "fast-export";
-	if (export_marks)
-		fastexport->argv[argc++] = export_marks;
-	if (import_marks)
-		fastexport->argv[argc++] = import_marks;
+	fastexport->argv[argc++] = "--use-done-feature";
+	if (data->export_marks)
+		fastexport->argv[argc++] = data->export_marks;
+	if (data->import_marks)
+		fastexport->argv[argc++] = data->import_marks;
 
 	for (i = 0; i < revlist_args->nr; i++)
 		fastexport->argv[argc++] = revlist_args->items[i].string;
@@ -410,8 +436,11 @@ static int fetch_with_import(struct transport *transport,
 		sendline(data, &buf);
 		strbuf_reset(&buf);
 	}
-	disconnect_helper(transport);
-	finish_command(&fastimport);
+
+	write_constant(data->helper->in, "\n");
+
+	if (finish_command(&fastimport))
+		die("Error while running fast-import");
 	free(fastimport.argv);
 	fastimport.argv = NULL;
 
@@ -423,9 +452,11 @@ static int fetch_with_import(struct transport *transport,
 		if (data->refspecs)
 			private = apply_refspecs(data->refspecs, data->refspec_nr, posn->name);
 		else
-			private = strdup(posn->name);
-		read_ref(private, posn->old_sha1);
-		free(private);
+			private = xstrdup(posn->name);
+		if (private) {
+			read_ref(private, posn->old_sha1);
+			free(private);
+		}
 	}
 	strbuf_release(&buf);
 	return 0;
@@ -554,6 +585,88 @@ static int fetch(struct transport *transport,
 	return -1;
 }
 
+static void push_update_ref_status(struct strbuf *buf,
+				   struct ref **ref,
+				   struct ref *remote_refs)
+{
+	char *refname, *msg;
+	int status;
+
+	if (!prefixcmp(buf->buf, "ok ")) {
+		status = REF_STATUS_OK;
+		refname = buf->buf + 3;
+	} else if (!prefixcmp(buf->buf, "error ")) {
+		status = REF_STATUS_REMOTE_REJECT;
+		refname = buf->buf + 6;
+	} else
+		die("expected ok/error, helper said '%s'\n", buf->buf);
+
+	msg = strchr(refname, ' ');
+	if (msg) {
+		struct strbuf msg_buf = STRBUF_INIT;
+		const char *end;
+
+		*msg++ = '\0';
+		if (!unquote_c_style(&msg_buf, msg, &end))
+			msg = strbuf_detach(&msg_buf, NULL);
+		else
+			msg = xstrdup(msg);
+		strbuf_release(&msg_buf);
+
+		if (!strcmp(msg, "no match")) {
+			status = REF_STATUS_NONE;
+			free(msg);
+			msg = NULL;
+		}
+		else if (!strcmp(msg, "up to date")) {
+			status = REF_STATUS_UPTODATE;
+			free(msg);
+			msg = NULL;
+		}
+		else if (!strcmp(msg, "non-fast forward")) {
+			status = REF_STATUS_REJECT_NONFASTFORWARD;
+			free(msg);
+			msg = NULL;
+		}
+	}
+
+	if (*ref)
+		*ref = find_ref_by_name(*ref, refname);
+	if (!*ref)
+		*ref = find_ref_by_name(remote_refs, refname);
+	if (!*ref) {
+		warning("helper reported unexpected status of %s", refname);
+		return;
+	}
+
+	if ((*ref)->status != REF_STATUS_NONE) {
+		/*
+		 * Earlier, the ref was marked not to be pushed, so ignore the ref
+		 * status reported by the remote helper if the latter is 'no match'.
+		 */
+		if (status == REF_STATUS_NONE)
+			return;
+	}
+
+	(*ref)->status = status;
+	(*ref)->remote_status = msg;
+}
+
+static void push_update_refs_status(struct helper_data *data,
+				    struct ref *remote_refs)
+{
+	struct strbuf buf = STRBUF_INIT;
+	struct ref *ref = remote_refs;
+	for (;;) {
+		recvline(data, &buf);
+		if (!buf.len)
+			break;
+
+		push_update_ref_status(&buf, &ref, remote_refs);
+	}
+	strbuf_release(&buf);
+}
+
 static int push_refs_with_push(struct transport *transport,
 		struct ref *remote_refs, int flags)
 {
@@ -561,10 +674,9 @@ static int push_refs_with_push(struct transport *transport,
 	int mirror = flags & TRANSPORT_PUSH_MIRROR;
 	struct helper_data *data = transport->data;
 	struct strbuf buf = STRBUF_INIT;
-	struct child_process *helper;
 	struct ref *ref;
 
-	helper = get_helper(transport);
+	get_helper(transport);
 	if (!data->push)
 		return 1;
 
@@ -609,76 +721,9 @@ static int push_refs_with_push(struct transport *transport,
 
 	strbuf_addch(&buf, '\n');
 	sendline(data, &buf);
-
-	ref = remote_refs;
-	while (1) {
-		char *refname, *msg;
-		int status;
-
-		recvline(data, &buf);
-		if (!buf.len)
-			break;
-
-		if (!prefixcmp(buf.buf, "ok ")) {
-			status = REF_STATUS_OK;
-			refname = buf.buf + 3;
-		} else if (!prefixcmp(buf.buf, "error ")) {
-			status = REF_STATUS_REMOTE_REJECT;
-			refname = buf.buf + 6;
-		} else
-			die("expected ok/error, helper said '%s'\n", buf.buf);
-
-		msg = strchr(refname, ' ');
-		if (msg) {
-			struct strbuf msg_buf = STRBUF_INIT;
-			const char *end;
-
-			*msg++ = '\0';
-			if (!unquote_c_style(&msg_buf, msg, &end))
-				msg = strbuf_detach(&msg_buf, NULL);
-			else
-				msg = xstrdup(msg);
-			strbuf_release(&msg_buf);
-
-			if (!strcmp(msg, "no match")) {
-				status = REF_STATUS_NONE;
-				free(msg);
-				msg = NULL;
-			}
-			else if (!strcmp(msg, "up to date")) {
-				status = REF_STATUS_UPTODATE;
-				free(msg);
-				msg = NULL;
-			}
-			else if (!strcmp(msg, "non-fast forward")) {
-				status = REF_STATUS_REJECT_NONFASTFORWARD;
-				free(msg);
-				msg = NULL;
-			}
-		}
-
-		if (ref)
-			ref = find_ref_by_name(ref, refname);
-		if (!ref)
-			ref = find_ref_by_name(remote_refs, refname);
-		if (!ref) {
-			warning("helper reported unexpected status of %s", refname);
-			continue;
-		}
-
-		if (ref->status != REF_STATUS_NONE) {
-			/*
-			 * Earlier, the ref was marked not to be pushed, so ignore the ref
-			 * status reported by the remote helper if the latter is 'no match'.
-			 */
-			if (status == REF_STATUS_NONE)
-				continue;
-		}
-
-		ref->status = status;
-		ref->remote_status = msg;
-	}
 	strbuf_release(&buf);
+
+	push_update_refs_status(data, remote_refs);
 	return 0;
 }
 
@@ -688,33 +733,12 @@ static int push_refs_with_export(struct transport *transport,
 	struct ref *ref;
 	struct child_process *helper, exporter;
 	struct helper_data *data = transport->data;
-	char *export_marks = NULL, *import_marks = NULL;
-	struct string_list revlist_args = { NULL, 0, 0 };
+	struct string_list revlist_args = STRING_LIST_INIT_NODUP;
 	struct strbuf buf = STRBUF_INIT;
 
 	helper = get_helper(transport);
 
 	write_constant(helper->in, "export\n");
-
-	recvline(data, &buf);
-	if (debug)
-		fprintf(stderr, "Debug: Got export_marks '%s'\n", buf.buf);
-	if (buf.len) {
-		struct strbuf arg = STRBUF_INIT;
-		strbuf_addstr(&arg, "--export-marks=");
-		strbuf_addbuf(&arg, &buf);
-		export_marks = strbuf_detach(&arg, NULL);
-	}
-
-	recvline(data, &buf);
-	if (debug)
-		fprintf(stderr, "Debug: Got import_marks '%s'\n", buf.buf);
-	if (buf.len) {
-		struct strbuf arg = STRBUF_INIT;
-		strbuf_addstr(&arg, "--import-marks=");
-		strbuf_addbuf(&arg, &buf);
-		import_marks = strbuf_detach(&arg, NULL);
-	}
 
 	strbuf_reset(&buf);
 
@@ -729,18 +753,23 @@ static int push_refs_with_export(struct transport *transport,
 			strbuf_addf(&buf, "^%s", private);
 			string_list_append(&revlist_args, strbuf_detach(&buf, NULL));
 		}
+		free(private);
 
-		string_list_append(&revlist_args, ref->name);
+		if (ref->deletion) {
+			die("remote-helpers do not support ref deletion");
+		}
+
+		if (ref->peer_ref)
+			string_list_append(&revlist_args, ref->peer_ref->name);
 
 	}
 
-	if (get_exporter(transport, &exporter,
-			 export_marks, import_marks, &revlist_args))
+	if (get_exporter(transport, &exporter, &revlist_args))
 		die("Couldn't run fast-export");
 
-	data->no_disconnect_req = 1;
-	finish_command(&exporter);
-	disconnect_helper(transport);
+	if (finish_command(&exporter))
+		die("Error while running fast-export");
+	push_update_refs_status(data, remote_refs);
 	return 0;
 }
 
@@ -861,4 +890,315 @@ int transport_helper_init(struct transport *transport, const char *name)
 	transport->connect = connect_helper;
 	transport->smart_options = &(data->transport_options);
 	return 0;
+}
+
+/*
+ * Linux pipes can buffer 65536 bytes at once (and most platforms can
+ * buffer less), so attempt reads and writes with up to that size.
+ */
+#define BUFFERSIZE 65536
+/* This should be enough to hold debugging message. */
+#define PBUFFERSIZE 8192
+
+/* Print bidirectional transfer loop debug message. */
+static void transfer_debug(const char *fmt, ...)
+{
+	va_list args;
+	char msgbuf[PBUFFERSIZE];
+	static int debug_enabled = -1;
+
+	if (debug_enabled < 0)
+		debug_enabled = getenv("GIT_TRANSLOOP_DEBUG") ? 1 : 0;
+	if (!debug_enabled)
+		return;
+
+	va_start(args, fmt);
+	vsnprintf(msgbuf, PBUFFERSIZE, fmt, args);
+	va_end(args);
+	fprintf(stderr, "Transfer loop debugging: %s\n", msgbuf);
+}
+
+/* Stream state: More data may be coming in this direction. */
+#define SSTATE_TRANSFERING 0
+/*
+ * Stream state: No more data coming in this direction, flushing rest of
+ * data.
+ */
+#define SSTATE_FLUSHING 1
+/* Stream state: Transfer in this direction finished. */
+#define SSTATE_FINISHED 2
+
+#define STATE_NEEDS_READING(state) ((state) <= SSTATE_TRANSFERING)
+#define STATE_NEEDS_WRITING(state) ((state) <= SSTATE_FLUSHING)
+#define STATE_NEEDS_CLOSING(state) ((state) == SSTATE_FLUSHING)
+
+/* Unidirectional transfer. */
+struct unidirectional_transfer {
+	/* Source */
+	int src;
+	/* Destination */
+	int dest;
+	/* Is source socket? */
+	int src_is_sock;
+	/* Is destination socket? */
+	int dest_is_sock;
+	/* Transfer state (TRANSFERING/FLUSHING/FINISHED) */
+	int state;
+	/* Buffer. */
+	char buf[BUFFERSIZE];
+	/* Buffer used. */
+	size_t bufuse;
+	/* Name of source. */
+	const char *src_name;
+	/* Name of destination. */
+	const char *dest_name;
+};
+
+/* Closes the target (for writing) if transfer has finished. */
+static void udt_close_if_finished(struct unidirectional_transfer *t)
+{
+	if (STATE_NEEDS_CLOSING(t->state) && !t->bufuse) {
+		t->state = SSTATE_FINISHED;
+		if (t->dest_is_sock)
+			shutdown(t->dest, SHUT_WR);
+		else
+			close(t->dest);
+		transfer_debug("Closed %s.", t->dest_name);
+	}
+}
+
+/*
+ * Tries to read read data from source into buffer. If buffer is full,
+ * no data is read. Returns 0 on success, -1 on error.
+ */
+static int udt_do_read(struct unidirectional_transfer *t)
+{
+	ssize_t bytes;
+
+	if (t->bufuse == BUFFERSIZE)
+		return 0;	/* No space for more. */
+
+	transfer_debug("%s is readable", t->src_name);
+	bytes = read(t->src, t->buf + t->bufuse, BUFFERSIZE - t->bufuse);
+	if (bytes < 0 && errno != EWOULDBLOCK && errno != EAGAIN &&
+		errno != EINTR) {
+		error("read(%s) failed: %s", t->src_name, strerror(errno));
+		return -1;
+	} else if (bytes == 0) {
+		transfer_debug("%s EOF (with %i bytes in buffer)",
+			t->src_name, t->bufuse);
+		t->state = SSTATE_FLUSHING;
+	} else if (bytes > 0) {
+		t->bufuse += bytes;
+		transfer_debug("Read %i bytes from %s (buffer now at %i)",
+			(int)bytes, t->src_name, (int)t->bufuse);
+	}
+	return 0;
+}
+
+/* Tries to write data from buffer into destination. If buffer is empty,
+ * no data is written. Returns 0 on success, -1 on error.
+ */
+static int udt_do_write(struct unidirectional_transfer *t)
+{
+	ssize_t bytes;
+
+	if (t->bufuse == 0)
+		return 0;	/* Nothing to write. */
+
+	transfer_debug("%s is writable", t->dest_name);
+	bytes = write(t->dest, t->buf, t->bufuse);
+	if (bytes < 0 && errno != EWOULDBLOCK && errno != EAGAIN &&
+		errno != EINTR) {
+		error("write(%s) failed: %s", t->dest_name, strerror(errno));
+		return -1;
+	} else if (bytes > 0) {
+		t->bufuse -= bytes;
+		if (t->bufuse)
+			memmove(t->buf, t->buf + bytes, t->bufuse);
+		transfer_debug("Wrote %i bytes to %s (buffer now at %i)",
+			(int)bytes, t->dest_name, (int)t->bufuse);
+	}
+	return 0;
+}
+
+
+/* State of bidirectional transfer loop. */
+struct bidirectional_transfer_state {
+	/* Direction from program to git. */
+	struct unidirectional_transfer ptg;
+	/* Direction from git to program. */
+	struct unidirectional_transfer gtp;
+};
+
+static void *udt_copy_task_routine(void *udt)
+{
+	struct unidirectional_transfer *t = (struct unidirectional_transfer *)udt;
+	while (t->state != SSTATE_FINISHED) {
+		if (STATE_NEEDS_READING(t->state))
+			if (udt_do_read(t))
+				return NULL;
+		if (STATE_NEEDS_WRITING(t->state))
+			if (udt_do_write(t))
+				return NULL;
+		if (STATE_NEEDS_CLOSING(t->state))
+			udt_close_if_finished(t);
+	}
+	return udt;	/* Just some non-NULL value. */
+}
+
+#ifndef NO_PTHREADS
+
+/*
+ * Join thread, with apporiate errors on failure. Name is name for the
+ * thread (for error messages). Returns 0 on success, 1 on failure.
+ */
+static int tloop_join(pthread_t thread, const char *name)
+{
+	int err;
+	void *tret;
+	err = pthread_join(thread, &tret);
+	if (!tret) {
+		error("%s thread failed", name);
+		return 1;
+	}
+	if (err) {
+		error("%s thread failed to join: %s", name, strerror(err));
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Spawn the transfer tasks and then wait for them. Returns 0 on success,
+ * -1 on failure.
+ */
+static int tloop_spawnwait_tasks(struct bidirectional_transfer_state *s)
+{
+	pthread_t gtp_thread;
+	pthread_t ptg_thread;
+	int err;
+	int ret = 0;
+	err = pthread_create(&gtp_thread, NULL, udt_copy_task_routine,
+		&s->gtp);
+	if (err)
+		die("Can't start thread for copying data: %s", strerror(err));
+	err = pthread_create(&ptg_thread, NULL, udt_copy_task_routine,
+		&s->ptg);
+	if (err)
+		die("Can't start thread for copying data: %s", strerror(err));
+
+	ret |= tloop_join(gtp_thread, "Git to program copy");
+	ret |= tloop_join(ptg_thread, "Program to git copy");
+	return ret;
+}
+#else
+
+/* Close the source and target (for writing) for transfer. */
+static void udt_kill_transfer(struct unidirectional_transfer *t)
+{
+	t->state = SSTATE_FINISHED;
+	/*
+	 * Socket read end left open isn't a disaster if nobody
+	 * attempts to read from it (mingw compat headers do not
+	 * have SHUT_RD)...
+	 *
+	 * We can't fully close the socket since otherwise gtp
+	 * task would first close the socket it sends data to
+	 * while closing the ptg file descriptors.
+	 */
+	if (!t->src_is_sock)
+		close(t->src);
+	if (t->dest_is_sock)
+		shutdown(t->dest, SHUT_WR);
+	else
+		close(t->dest);
+}
+
+/*
+ * Join process, with apporiate errors on failure. Name is name for the
+ * process (for error messages). Returns 0 on success, 1 on failure.
+ */
+static int tloop_join(pid_t pid, const char *name)
+{
+	int tret;
+	if (waitpid(pid, &tret, 0) < 0) {
+		error("%s process failed to wait: %s", name, strerror(errno));
+		return 1;
+	}
+	if (!WIFEXITED(tret) || WEXITSTATUS(tret)) {
+		error("%s process failed", name);
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Spawn the transfer tasks and then wait for them. Returns 0 on success,
+ * -1 on failure.
+ */
+static int tloop_spawnwait_tasks(struct bidirectional_transfer_state *s)
+{
+	pid_t pid1, pid2;
+	int ret = 0;
+
+	/* Fork thread #1: git to program. */
+	pid1 = fork();
+	if (pid1 < 0)
+		die_errno("Can't start thread for copying data");
+	else if (pid1 == 0) {
+		udt_kill_transfer(&s->ptg);
+		exit(udt_copy_task_routine(&s->gtp) ? 0 : 1);
+	}
+
+	/* Fork thread #2: program to git. */
+	pid2 = fork();
+	if (pid2 < 0)
+		die_errno("Can't start thread for copying data");
+	else if (pid2 == 0) {
+		udt_kill_transfer(&s->gtp);
+		exit(udt_copy_task_routine(&s->ptg) ? 0 : 1);
+	}
+
+	/*
+	 * Close both streams in parent as to not interfere with
+	 * end of file detection and wait for both tasks to finish.
+	 */
+	udt_kill_transfer(&s->gtp);
+	udt_kill_transfer(&s->ptg);
+	ret |= tloop_join(pid1, "Git to program copy");
+	ret |= tloop_join(pid2, "Program to git copy");
+	return ret;
+}
+#endif
+
+/*
+ * Copies data from stdin to output and from input to stdout simultaneously.
+ * Additionally filtering through given filter. If filter is NULL, uses
+ * identity filter.
+ */
+int bidirectional_transfer_loop(int input, int output)
+{
+	struct bidirectional_transfer_state state;
+
+	/* Fill the state fields. */
+	state.ptg.src = input;
+	state.ptg.dest = 1;
+	state.ptg.src_is_sock = (input == output);
+	state.ptg.dest_is_sock = 0;
+	state.ptg.state = SSTATE_TRANSFERING;
+	state.ptg.bufuse = 0;
+	state.ptg.src_name = "remote input";
+	state.ptg.dest_name = "stdout";
+
+	state.gtp.src = 0;
+	state.gtp.dest = output;
+	state.gtp.src_is_sock = 0;
+	state.gtp.dest_is_sock = (input == output);
+	state.gtp.state = SSTATE_TRANSFERING;
+	state.gtp.bufuse = 0;
+	state.gtp.src_name = "stdin";
+	state.gtp.dest_name = "remote output";
+
+	return tloop_spawnwait_tasks(&state);
 }

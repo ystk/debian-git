@@ -6,6 +6,7 @@
 #include "diff.h"
 #include "revision.h"
 #include "notes.h"
+#include "gpg-interface.h"
 
 int save_commit_buffer = 1;
 
@@ -39,6 +40,18 @@ struct commit *lookup_commit_reference(const unsigned char *sha1)
 	return lookup_commit_reference_gently(sha1, 0);
 }
 
+struct commit *lookup_commit_or_die(const unsigned char *sha1, const char *ref_name)
+{
+	struct commit *c = lookup_commit_reference(sha1);
+	if (!c)
+		die(_("could not parse %s"), ref_name);
+	if (hashcmp(sha1, c->object.sha1)) {
+		warning(_("%s %s is not a commit!"),
+			ref_name, sha1_to_hex(sha1));
+	}
+	return c;
+}
+
 struct commit *lookup_commit(const unsigned char *sha1)
 {
 	struct object *obj = lookup_object(sha1);
@@ -47,6 +60,19 @@ struct commit *lookup_commit(const unsigned char *sha1)
 	if (!obj->type)
 		obj->type = OBJ_COMMIT;
 	return check_commit(obj, sha1, 0);
+}
+
+struct commit *lookup_commit_reference_by_name(const char *name)
+{
+	unsigned char sha1[20];
+	struct commit *commit;
+
+	if (get_sha1(name, sha1))
+		return NULL;
+	commit = lookup_commit_reference(sha1);
+	if (!commit || parse_commit(commit))
+		return NULL;
+	return commit;
 }
 
 static unsigned long parse_commit_date(const char *buf, const char *tail)
@@ -137,12 +163,8 @@ struct commit_graft *read_graft_line(char *buf, int len)
 		buf[--len] = '\0';
 	if (buf[0] == '#' || buf[0] == '\0')
 		return NULL;
-	if ((len + 1) % 41) {
-	bad_graft_data:
-		error("bad graft data: %s", buf);
-		free(graft);
-		return NULL;
-	}
+	if ((len + 1) % 41)
+		goto bad_graft_data;
 	i = (len + 1) / 41 - 1;
 	graft = xmalloc(sizeof(*graft) + 20 * i);
 	graft->nr_parent = i;
@@ -155,6 +177,11 @@ struct commit_graft *read_graft_line(char *buf, int len)
 			goto bad_graft_data;
 	}
 	return graft;
+
+bad_graft_data:
+	error("bad graft data: %s", buf);
+	free(graft);
+	return NULL;
 }
 
 static int read_graft_file(const char *graft_file)
@@ -200,22 +227,12 @@ struct commit_graft *lookup_commit_graft(const unsigned char *sha1)
 	return commit_graft[pos];
 }
 
-int write_shallow_commits(struct strbuf *out, int use_pack_protocol)
+int for_each_commit_graft(each_commit_graft_fn fn, void *cb_data)
 {
-	int i, count = 0;
-	for (i = 0; i < commit_graft_nr; i++)
-		if (commit_graft[i]->nr_parent < 0) {
-			const char *hex =
-				sha1_to_hex(commit_graft[i]->sha1);
-			count++;
-			if (use_pack_protocol)
-				packet_buf_write(out, "shallow %s", hex);
-			else {
-				strbuf_addstr(out, hex);
-				strbuf_addch(out, '\n');
-			}
-		}
-	return count;
+	int i, ret;
+	for (i = ret = 0; i < commit_graft_nr && !ret; i++)
+		ret = fn(commit_graft[i], cb_data);
+	return ret;
 }
 
 int unregister_shallow(const unsigned char *sha1)
@@ -231,10 +248,10 @@ int unregister_shallow(const unsigned char *sha1)
 	return 0;
 }
 
-int parse_commit_buffer(struct commit *item, void *buffer, unsigned long size)
+int parse_commit_buffer(struct commit *item, const void *buffer, unsigned long size)
 {
-	char *tail = buffer;
-	char *bufptr = buffer;
+	const char *tail = buffer;
+	const char *bufptr = buffer;
 	unsigned char parent[20];
 	struct commit_list **pptr;
 	struct commit_graft *graft;
@@ -315,6 +332,25 @@ int parse_commit(struct commit *item)
 	return ret;
 }
 
+int find_commit_subject(const char *commit_buffer, const char **subject)
+{
+	const char *eol;
+	const char *p = commit_buffer;
+
+	while (*p && (*p != '\n' || p[1] != '\n'))
+		p++;
+	if (*p) {
+		p += 2;
+		for (eol = p; *eol && *eol != '\n'; eol++)
+			; /* do nothing */
+	} else
+		eol = p;
+
+	*subject = p;
+
+	return eol - p;
+}
+
 struct commit_list *commit_list_insert(struct commit *item, struct commit_list **list_p)
 {
 	struct commit_list *new_list = xmalloc(sizeof(struct commit_list));
@@ -341,7 +377,7 @@ void free_commit_list(struct commit_list *list)
 	}
 }
 
-struct commit_list * insert_by_date(struct commit *item, struct commit_list **list)
+struct commit_list * commit_list_insert_by_date(struct commit *item, struct commit_list **list)
 {
 	struct commit_list **pp = list;
 	struct commit_list *p;
@@ -355,11 +391,11 @@ struct commit_list * insert_by_date(struct commit *item, struct commit_list **li
 }
 
 
-void sort_by_date(struct commit_list **list)
+void commit_list_sort_by_date(struct commit_list **list)
 {
 	struct commit_list *ret = NULL;
 	while (*list) {
-		insert_by_date((*list)->item, &ret);
+		commit_list_insert_by_date((*list)->item, &ret);
 		*list = (*list)->next;
 	}
 	*list = ret;
@@ -379,14 +415,15 @@ struct commit *pop_most_recent_commit(struct commit_list **list,
 		struct commit *commit = parents->item;
 		if (!parse_commit(commit) && !(commit->object.flags & mark)) {
 			commit->object.flags |= mark;
-			insert_by_date(commit, list);
+			commit_list_insert_by_date(commit, list);
 		}
 		parents = parents->next;
 	}
 	return ret;
 }
 
-void clear_commit_marks(struct commit *commit, unsigned int mark)
+static void clear_commit_marks_1(struct commit_list **plist,
+				 struct commit *commit, unsigned int mark)
 {
 	while (commit) {
 		struct commit_list *parents;
@@ -401,9 +438,31 @@ void clear_commit_marks(struct commit *commit, unsigned int mark)
 			return;
 
 		while ((parents = parents->next))
-			clear_commit_marks(parents->item, mark);
+			commit_list_insert(parents->item, plist);
 
 		commit = commit->parents->item;
+	}
+}
+
+void clear_commit_marks(struct commit *commit, unsigned int mark)
+{
+	struct commit_list *list = NULL;
+	commit_list_insert(commit, &list);
+	while (list)
+		clear_commit_marks_1(&list, pop_commit(&list), mark);
+}
+
+void clear_commit_marks_for_object_array(struct object_array *a, unsigned mark)
+{
+	struct object *object;
+	struct commit *commit;
+	unsigned int i;
+
+	for (i = 0; i < a->nr; i++) {
+		object = a->objects[i].item;
+		commit = lookup_commit_reference_gently(object->sha1, 1);
+		if (commit)
+			clear_commit_marks(commit, mark);
 	}
 }
 
@@ -468,7 +527,7 @@ void sort_in_topological_order(struct commit_list ** list, int lifo)
 
 	/* process the list in topological order */
 	if (!lifo)
-		sort_by_date(&work);
+		commit_list_sort_by_date(&work);
 
 	pptr = list;
 	*list = NULL;
@@ -482,7 +541,7 @@ void sort_in_topological_order(struct commit_list ** list, int lifo)
 
 		commit = work_item->item;
 		for (parents = commit->parents; parents ; parents = parents->next) {
-			struct commit *parent=parents->item;
+			struct commit *parent = parents->item;
 
 			if (!parent->indegree)
 				continue;
@@ -494,7 +553,7 @@ void sort_in_topological_order(struct commit_list ** list, int lifo)
 			 */
 			if (--parent->indegree == 1) {
 				if (!lifo)
-					insert_by_date(parent, &work);
+					commit_list_insert_by_date(parent, &work);
 				else
 					commit_list_insert(parent, &work);
 			}
@@ -554,10 +613,10 @@ static struct commit_list *merge_bases_many(struct commit *one, int n, struct co
 	}
 
 	one->object.flags |= PARENT1;
-	insert_by_date(one, &list);
+	commit_list_insert_by_date(one, &list);
 	for (i = 0; i < n; i++) {
 		twos[i]->object.flags |= PARENT2;
-		insert_by_date(twos[i], &list);
+		commit_list_insert_by_date(twos[i], &list);
 	}
 
 	while (interesting(list)) {
@@ -575,7 +634,7 @@ static struct commit_list *merge_bases_many(struct commit *one, int n, struct co
 		if (flags == (PARENT1 | PARENT2)) {
 			if (!(commit->object.flags & RESULT)) {
 				commit->object.flags |= RESULT;
-				insert_by_date(commit, &result);
+				commit_list_insert_by_date(commit, &result);
 			}
 			/* Mark parents of a found merge stale */
 			flags |= STALE;
@@ -589,7 +648,7 @@ static struct commit_list *merge_bases_many(struct commit *one, int n, struct co
 			if (parse_commit(p))
 				return NULL;
 			p->object.flags |= flags;
-			insert_by_date(p, &list);
+			commit_list_insert_by_date(p, &list);
 		}
 	}
 
@@ -599,7 +658,7 @@ static struct commit_list *merge_bases_many(struct commit *one, int n, struct co
 	while (list) {
 		struct commit_list *next = list->next;
 		if (!(list->item->object.flags & STALE))
-			insert_by_date(list->item, &result);
+			commit_list_insert_by_date(list->item, &result);
 		free(list);
 		list = next;
 	}
@@ -692,7 +751,7 @@ struct commit_list *get_merge_bases_many(struct commit *one,
 	result = NULL;
 	for (i = 0; i < cnt; i++) {
 		if (rslt[i])
-			insert_by_date(rslt[i], &result);
+			commit_list_insert_by_date(rslt[i], &result);
 	}
 	free(rslt);
 	return result;
@@ -791,20 +850,269 @@ struct commit_list *reduce_heads(struct commit_list *heads)
 	return result;
 }
 
+static const char gpg_sig_header[] = "gpgsig";
+static const int gpg_sig_header_len = sizeof(gpg_sig_header) - 1;
+
+static int do_sign_commit(struct strbuf *buf, const char *keyid)
+{
+	struct strbuf sig = STRBUF_INIT;
+	int inspos, copypos;
+
+	/* find the end of the header */
+	inspos = strstr(buf->buf, "\n\n") - buf->buf + 1;
+
+	if (!keyid || !*keyid)
+		keyid = get_signing_key();
+	if (sign_buffer(buf, &sig, keyid)) {
+		strbuf_release(&sig);
+		return -1;
+	}
+
+	for (copypos = 0; sig.buf[copypos]; ) {
+		const char *bol = sig.buf + copypos;
+		const char *eol = strchrnul(bol, '\n');
+		int len = (eol - bol) + !!*eol;
+
+		if (!copypos) {
+			strbuf_insert(buf, inspos, gpg_sig_header, gpg_sig_header_len);
+			inspos += gpg_sig_header_len;
+		}
+		strbuf_insert(buf, inspos++, " ", 1);
+		strbuf_insert(buf, inspos, bol, len);
+		inspos += len;
+		copypos += len;
+	}
+	strbuf_release(&sig);
+	return 0;
+}
+
+int parse_signed_commit(const unsigned char *sha1,
+			struct strbuf *payload, struct strbuf *signature)
+{
+	unsigned long size;
+	enum object_type type;
+	char *buffer = read_sha1_file(sha1, &type, &size);
+	int in_signature, saw_signature = -1;
+	char *line, *tail;
+
+	if (!buffer || type != OBJ_COMMIT)
+		goto cleanup;
+
+	line = buffer;
+	tail = buffer + size;
+	in_signature = 0;
+	saw_signature = 0;
+	while (line < tail) {
+		const char *sig = NULL;
+		char *next = memchr(line, '\n', tail - line);
+
+		next = next ? next + 1 : tail;
+		if (in_signature && line[0] == ' ')
+			sig = line + 1;
+		else if (!prefixcmp(line, gpg_sig_header) &&
+			 line[gpg_sig_header_len] == ' ')
+			sig = line + gpg_sig_header_len + 1;
+		if (sig) {
+			strbuf_add(signature, sig, next - sig);
+			saw_signature = 1;
+			in_signature = 1;
+		} else {
+			if (*line == '\n')
+				/* dump the whole remainder of the buffer */
+				next = tail;
+			strbuf_add(payload, line, next - line);
+			in_signature = 0;
+		}
+		line = next;
+	}
+ cleanup:
+	free(buffer);
+	return saw_signature;
+}
+
+static void handle_signed_tag(struct commit *parent, struct commit_extra_header ***tail)
+{
+	struct merge_remote_desc *desc;
+	struct commit_extra_header *mergetag;
+	char *buf;
+	unsigned long size, len;
+	enum object_type type;
+
+	desc = merge_remote_util(parent);
+	if (!desc || !desc->obj)
+		return;
+	buf = read_sha1_file(desc->obj->sha1, &type, &size);
+	if (!buf || type != OBJ_TAG)
+		goto free_return;
+	len = parse_signature(buf, size);
+	if (size == len)
+		goto free_return;
+	/*
+	 * We could verify this signature and either omit the tag when
+	 * it does not validate, but the integrator may not have the
+	 * public key of the signer of the tag he is merging, while a
+	 * later auditor may have it while auditing, so let's not run
+	 * verify-signed-buffer here for now...
+	 *
+	 * if (verify_signed_buffer(buf, len, buf + len, size - len, ...))
+	 *	warn("warning: signed tag unverified.");
+	 */
+	mergetag = xcalloc(1, sizeof(*mergetag));
+	mergetag->key = xstrdup("mergetag");
+	mergetag->value = buf;
+	mergetag->len = size;
+
+	**tail = mergetag;
+	*tail = &mergetag->next;
+	return;
+
+free_return:
+	free(buf);
+}
+
+void append_merge_tag_headers(struct commit_list *parents,
+			      struct commit_extra_header ***tail)
+{
+	while (parents) {
+		struct commit *parent = parents->item;
+		handle_signed_tag(parent, tail);
+		parents = parents->next;
+	}
+}
+
+static void add_extra_header(struct strbuf *buffer,
+			     struct commit_extra_header *extra)
+{
+	strbuf_addstr(buffer, extra->key);
+	if (extra->len)
+		strbuf_add_lines(buffer, " ", extra->value, extra->len);
+	else
+		strbuf_addch(buffer, '\n');
+}
+
+struct commit_extra_header *read_commit_extra_headers(struct commit *commit,
+						      const char **exclude)
+{
+	struct commit_extra_header *extra = NULL;
+	unsigned long size;
+	enum object_type type;
+	char *buffer = read_sha1_file(commit->object.sha1, &type, &size);
+	if (buffer && type == OBJ_COMMIT)
+		extra = read_commit_extra_header_lines(buffer, size, exclude);
+	free(buffer);
+	return extra;
+}
+
+static inline int standard_header_field(const char *field, size_t len)
+{
+	return ((len == 4 && !memcmp(field, "tree ", 5)) ||
+		(len == 6 && !memcmp(field, "parent ", 7)) ||
+		(len == 6 && !memcmp(field, "author ", 7)) ||
+		(len == 9 && !memcmp(field, "committer ", 10)) ||
+		(len == 8 && !memcmp(field, "encoding ", 9)));
+}
+
+static int excluded_header_field(const char *field, size_t len, const char **exclude)
+{
+	if (!exclude)
+		return 0;
+
+	while (*exclude) {
+		size_t xlen = strlen(*exclude);
+		if (len == xlen &&
+		    !memcmp(field, *exclude, xlen) && field[xlen] == ' ')
+			return 1;
+		exclude++;
+	}
+	return 0;
+}
+
+struct commit_extra_header *read_commit_extra_header_lines(const char *buffer, size_t size,
+							   const char **exclude)
+{
+	struct commit_extra_header *extra = NULL, **tail = &extra, *it = NULL;
+	const char *line, *next, *eof, *eob;
+	struct strbuf buf = STRBUF_INIT;
+
+	for (line = buffer, eob = line + size;
+	     line < eob && *line != '\n';
+	     line = next) {
+		next = memchr(line, '\n', eob - line);
+		next = next ? next + 1 : eob;
+		if (*line == ' ') {
+			/* continuation */
+			if (it)
+				strbuf_add(&buf, line + 1, next - (line + 1));
+			continue;
+		}
+		if (it)
+			it->value = strbuf_detach(&buf, &it->len);
+		strbuf_reset(&buf);
+		it = NULL;
+
+		eof = strchr(line, ' ');
+		if (next <= eof)
+			eof = next;
+
+		if (standard_header_field(line, eof - line) ||
+		    excluded_header_field(line, eof - line, exclude))
+			continue;
+
+		it = xcalloc(1, sizeof(*it));
+		it->key = xmemdupz(line, eof-line);
+		*tail = it;
+		tail = &it->next;
+		if (eof + 1 < next)
+			strbuf_add(&buf, eof + 1, next - (eof + 1));
+	}
+	if (it)
+		it->value = strbuf_detach(&buf, &it->len);
+	return extra;
+}
+
+void free_commit_extra_headers(struct commit_extra_header *extra)
+{
+	while (extra) {
+		struct commit_extra_header *next = extra->next;
+		free(extra->key);
+		free(extra->value);
+		free(extra);
+		extra = next;
+	}
+}
+
+int commit_tree(const struct strbuf *msg, unsigned char *tree,
+		struct commit_list *parents, unsigned char *ret,
+		const char *author, const char *sign_commit)
+{
+	struct commit_extra_header *extra = NULL, **tail = &extra;
+	int result;
+
+	append_merge_tag_headers(parents, &tail);
+	result = commit_tree_extended(msg, tree, parents, ret,
+				      author, sign_commit, extra);
+	free_commit_extra_headers(extra);
+	return result;
+}
+
 static const char commit_utf8_warn[] =
 "Warning: commit message does not conform to UTF-8.\n"
 "You may want to amend it after fixing the message, or set the config\n"
 "variable i18n.commitencoding to the encoding your project uses.\n";
 
-int commit_tree(const char *msg, unsigned char *tree,
-		struct commit_list *parents, unsigned char *ret,
-		const char *author)
+int commit_tree_extended(const struct strbuf *msg, unsigned char *tree,
+			 struct commit_list *parents, unsigned char *ret,
+			 const char *author, const char *sign_commit,
+			 struct commit_extra_header *extra)
 {
 	int result;
 	int encoding_is_utf8;
 	struct strbuf buffer;
 
 	assert_sha1_type(tree, OBJ_TREE);
+
+	if (memchr(msg->buf, '\0', msg->len))
+		return error("a NUL byte in commit log message not allowed.");
 
 	/* Not having i18n.commitencoding is the same as having utf-8 */
 	encoding_is_utf8 = is_encoding_utf8(git_commit_encoding);
@@ -819,8 +1127,10 @@ int commit_tree(const char *msg, unsigned char *tree,
 	 */
 	while (parents) {
 		struct commit_list *next = parents->next;
+		struct commit *parent = parents->item;
+
 		strbuf_addf(&buffer, "parent %s\n",
-			sha1_to_hex(parents->item->object.sha1));
+			    sha1_to_hex(parent->object.sha1));
 		free(parents);
 		parents = next;
 	}
@@ -832,16 +1142,43 @@ int commit_tree(const char *msg, unsigned char *tree,
 	strbuf_addf(&buffer, "committer %s\n", git_committer_info(IDENT_ERROR_ON_NO_NAME));
 	if (!encoding_is_utf8)
 		strbuf_addf(&buffer, "encoding %s\n", git_commit_encoding);
+
+	while (extra) {
+		add_extra_header(&buffer, extra);
+		extra = extra->next;
+	}
 	strbuf_addch(&buffer, '\n');
 
 	/* And add the comment */
-	strbuf_addstr(&buffer, msg);
+	strbuf_addbuf(&buffer, msg);
 
 	/* And check the encoding */
 	if (encoding_is_utf8 && !is_utf8(buffer.buf))
 		fprintf(stderr, commit_utf8_warn);
 
+	if (sign_commit && do_sign_commit(&buffer, sign_commit))
+		return -1;
+
 	result = write_sha1_file(buffer.buf, buffer.len, commit_type, ret);
 	strbuf_release(&buffer);
 	return result;
+}
+
+struct commit *get_merge_parent(const char *name)
+{
+	struct object *obj;
+	struct commit *commit;
+	unsigned char sha1[20];
+	if (get_sha1(name, sha1))
+		return NULL;
+	obj = parse_object(sha1);
+	commit = (struct commit *)peel_to_type(name, 0, obj, OBJ_COMMIT);
+	if (commit && !commit->util) {
+		struct merge_remote_desc *desc;
+		desc = xmalloc(sizeof(*desc));
+		desc->obj = obj;
+		desc->name = strdup(name);
+		commit->util = desc;
+	}
+	return commit;
 }

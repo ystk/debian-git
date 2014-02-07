@@ -12,7 +12,7 @@ TRASH=`pwd`
 
 test_expect_success \
     'setup' \
-    'rm -f .git/index*
+    'rm -f .git/index* &&
      perl -e "print \"a\" x 4096;" > a &&
      perl -e "print \"b\" x 4096;" > b &&
      perl -e "print \"c\" x 4096;" > c &&
@@ -37,6 +37,10 @@ test_expect_success \
 test_expect_success \
     'pack without delta' \
     'packname_1=$(git pack-objects --window=0 test-1 <obj-list)'
+
+test_expect_success \
+    'pack-objects with bogus arguments' \
+    'test_must_fail git pack-objects --window=0 test-1 blah blah <obj-list'
 
 rm -fr .git2
 mkdir .git2

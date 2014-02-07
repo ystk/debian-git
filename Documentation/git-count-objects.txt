@@ -7,6 +7,7 @@ git-count-objects - Count unpacked number of objects and their disk consumption
 
 SYNOPSIS
 --------
+[verse]
 'git count-objects' [-v]
 
 DESCRIPTION
@@ -24,15 +25,6 @@ OPTIONS
 	objects, number of packs, disk space consumed by those packs,
 	and number of objects that can be removed by running
 	`git prune-packed`.
-
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

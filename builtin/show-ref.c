@@ -120,7 +120,7 @@ static int add_existing(const char *refname, const unsigned char *sha1, int flag
  */
 static int exclude_existing(const char *match)
 {
-	static struct string_list existing_refs = { NULL, 0, 0, 0 };
+	static struct string_list existing_refs = STRING_LIST_INIT_NODUP;
 	char buf[1024];
 	int matchlen = match ? strlen(match) : 0;
 
@@ -145,7 +145,7 @@ static int exclude_existing(const char *match)
 			if (strncmp(ref, match, matchlen))
 				continue;
 		}
-		if (check_ref_format(ref)) {
+		if (check_refname_format(ref, 0)) {
 			warning("ref '%s' ignored", ref);
 			continue;
 		}
@@ -193,7 +193,8 @@ static const struct option show_ref_options[] = {
 	  "only show SHA1 hash using <n> digits",
 	  PARSE_OPT_OPTARG, &hash_callback },
 	OPT__ABBREV(&abbrev),
-	OPT__QUIET(&quiet),
+	OPT__QUIET(&quiet,
+		   "do not print results to stdout (useful with --verify)"),
 	{ OPTION_CALLBACK, 0, "exclude-existing", &exclude_existing_arg,
 	  "pattern", "show refs from stdin that aren't in local repository",
 	  PARSE_OPT_OPTARG | PARSE_OPT_NONEG, exclude_existing_callback },
@@ -224,7 +225,7 @@ int cmd_show_ref(int argc, const char **argv, const char *prefix)
 			unsigned char sha1[20];
 
 			if (!prefixcmp(*pattern, "refs/") &&
-			    resolve_ref(*pattern, sha1, 1, NULL)) {
+			    !read_ref(*pattern, sha1)) {
 				if (!quiet)
 					show_one(*pattern, sha1);
 			}

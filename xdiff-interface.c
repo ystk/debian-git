@@ -212,8 +212,10 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 		return error("Could not open %s", filename);
 	sz = xsize_t(st.st_size);
 	ptr->ptr = xmalloc(sz ? sz : 1);
-	if (sz && fread(ptr->ptr, sz, 1, f) != 1)
+	if (sz && fread(ptr->ptr, sz, 1, f) != 1) {
+		fclose(f);
 		return error("Could not read %s", filename);
+	}
 	fclose(f);
 	ptr->size = sz;
 	return 0;
@@ -345,7 +347,7 @@ int git_xmerge_style = -1;
 
 int git_xmerge_config(const char *var, const char *value, void *cb)
 {
-	if (!strcasecmp(var, "merge.conflictstyle")) {
+	if (!strcmp(var, "merge.conflictstyle")) {
 		if (!value)
 			die("'%s' is not a boolean", var);
 		if (!strcmp(value, "diff3"))

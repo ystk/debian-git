@@ -26,7 +26,7 @@ test_expect_success 'setup' '
 	test_tick &&
 	git tag rein &&
 	git checkout -b wer HEAD^ &&
-	echo lange > file2
+	echo lange > file2 &&
 	test_tick &&
 	git commit -m sitzt file2 &&
 	test_tick &&
@@ -86,7 +86,7 @@ test_expect_success 'import/export-marks' '
 	git checkout -b marks master &&
 	git fast-export --export-marks=tmp-marks HEAD &&
 	test -s tmp-marks &&
-	test $(wc -l < tmp-marks) -eq 3 &&
+	test_line_count = 3 tmp-marks &&
 	test $(
 		git fast-export --import-marks=tmp-marks\
 		--export-marks=tmp-marks HEAD |
@@ -101,7 +101,7 @@ test_expect_success 'import/export-marks' '
 		grep ^commit\  |
 		wc -l) \
 	-eq 1 &&
-	test $(wc -l < tmp-marks) -eq 4
+	test_line_count = 4 tmp-marks
 
 '
 
@@ -228,7 +228,7 @@ test_expect_success 'fast-export -C -C | fast-import' '
 	mkdir new &&
 	git --git-dir=new/.git init &&
 	git fast-export -C -C --signed-tags=strip --all > output &&
-	grep "^C \"file6\" \"file7\"\$" output &&
+	grep "^C file6 file7\$" output &&
 	cat output |
 	(cd new &&
 	 git fast-import &&
@@ -355,6 +355,20 @@ test_expect_failure 'no exact-ref revisions included' '
 	)
 '
 
+test_expect_success 'path limiting with import-marks does not lose unmodified files'        '
+	git checkout -b simple marks~2 &&
+	git fast-export --export-marks=marks simple -- file > /dev/null &&
+	echo more content >> file &&
+	test_tick &&
+	git commit -mnext file &&
+	git fast-export --import-marks=marks simple -- file file0 | grep file0
+'
+
+test_expect_success 'full-tree re-shows unmodified files'        '
+	git checkout -f simple &&
+	test $(git fast-export --full-tree simple | grep -c file0) -eq 3
+'
+
 test_expect_success 'set-up a few more tags for tag export tests' '
 	git checkout -f master &&
 	HEAD_TREE=`git show -s --pretty=raw HEAD | grep tree | sed "s/tree //"` &&
@@ -375,5 +389,55 @@ test_expect_success 'tree_tag'        '
 test_expect_success 'tree_tag-obj'    'git fast-export tree_tag-obj'
 test_expect_success 'tag-obj_tag'     'git fast-export tag-obj_tag'
 test_expect_success 'tag-obj_tag-obj' 'git fast-export tag-obj_tag-obj'
+
+test_expect_success SYMLINKS 'directory becomes symlink'        '
+	git init dirtosymlink &&
+	git init result &&
+	(
+		cd dirtosymlink &&
+		mkdir foo &&
+		mkdir bar &&
+		echo hello > foo/world &&
+		echo hello > bar/world &&
+		git add foo/world bar/world &&
+		git commit -q -mone &&
+		git rm -r foo &&
+		ln -s bar foo &&
+		git add foo &&
+		git commit -q -mtwo
+	) &&
+	(
+		cd dirtosymlink &&
+		git fast-export master -- foo |
+		(cd ../result && git fast-import --quiet)
+	) &&
+	(cd result && git show master:foo)
+'
+
+test_expect_success 'fast-export quotes pathnames' '
+	git init crazy-paths &&
+	(cd crazy-paths &&
+	 blob=`echo foo | git hash-object -w --stdin` &&
+	 git update-index --add \
+		--cacheinfo 100644 $blob "$(printf "path with\\nnewline")" \
+		--cacheinfo 100644 $blob "path with \"quote\"" \
+		--cacheinfo 100644 $blob "path with \\backslash" \
+		--cacheinfo 100644 $blob "path with space" &&
+	 git commit -m addition &&
+	 git ls-files -z -s | perl -0pe "s{\\t}{$&subdir/}" >index &&
+	 git read-tree --empty &&
+	 git update-index -z --index-info <index &&
+	 git commit -m rename &&
+	 git read-tree --empty &&
+	 git commit -m deletion &&
+	 git fast-export HEAD >export.out &&
+	 git rev-list HEAD >expect &&
+	 git init result &&
+	 cd result &&
+	 git fast-import <../export.out &&
+	 git rev-list HEAD >actual &&
+	 test_cmp ../expect actual
+	)
+'
 
 test_done

@@ -7,6 +7,7 @@ Git - Perl interface to the Git version control system
 
 package Git;
 
+use 5.008;
 use strict;
 
 
@@ -98,7 +99,7 @@ increase notwithstanding).
 
 use Carp qw(carp croak); # but croak is bad - throw instead
 use Error qw(:try);
-use Cwd qw(abs_path);
+use Cwd qw(abs_path cwd);
 use IPC::Open2 qw(open2);
 use Fcntl qw(SEEK_SET SEEK_CUR);
 }
@@ -395,7 +396,16 @@ See C<command_close_bidi_pipe()> for details.
 
 sub command_bidi_pipe {
 	my ($pid, $in, $out);
+	my ($self) = _maybe_self(@_);
+	local %ENV = %ENV;
+	my $cwd_save = undef;
+	if ($self) {
+		shift;
+		$cwd_save = cwd();
+		_setup_git_cmd_env($self);
+	}
 	$pid = open2($in, $out, 'git', @_);
+	chdir($cwd_save) if $cwd_save;
 	return ($pid, $in, $out, join(' ', @_));
 }
 
@@ -560,15 +570,68 @@ does. In scalar context requires the variable to be set only one time
 (exception is thrown otherwise), in array context returns allows the
 variable to be set multiple times and returns all the values.
 
-This currently wraps command('config') so it is not so fast.
-
 =cut
 
 sub config {
+	return _config_common({}, @_);
+}
+
+
+=item config_bool ( VARIABLE )
+
+Retrieve the bool configuration C<VARIABLE>. The return value
+is usable as a boolean in perl (and C<undef> if it's not defined,
+of course).
+
+=cut
+
+sub config_bool {
+	my $val = scalar _config_common({'kind' => '--bool'}, @_);
+
+	# Do not rewrite this as return (defined $val && $val eq 'true')
+	# as some callers do care what kind of falsehood they receive.
+	if (!defined $val) {
+		return undef;
+	} else {
+		return $val eq 'true';
+	}
+}
+
+
+=item config_path ( VARIABLE )
+
+Retrieve the path configuration C<VARIABLE>. The return value
+is an expanded path or C<undef> if it's not defined.
+
+=cut
+
+sub config_path {
+	return _config_common({'kind' => '--path'}, @_);
+}
+
+
+=item config_int ( VARIABLE )
+
+Retrieve the integer configuration C<VARIABLE>. The return value
+is simple decimal number.  An optional value suffix of 'k', 'm',
+or 'g' in the config file will cause the value to be multiplied
+by 1024, 1048576 (1024^2), or 1073741824 (1024^3) prior to output.
+It would return C<undef> if configuration variable is not defined,
+
+=cut
+
+sub config_int {
+	return scalar _config_common({'kind' => '--int'}, @_);
+}
+
+# Common subroutine to implement bulk of what the config* family of methods
+# do. This curently wraps command('config') so it is not so fast.
+sub _config_common {
+	my ($opts) = shift @_;
 	my ($self, $var) = _maybe_self(@_);
 
 	try {
-		my @cmd = ('config');
+		my @cmd = ('config', $opts->{'kind'} ? $opts->{'kind'} : ());
 		unshift @cmd, $self if $self;
 		if (wantarray) {
 			return command(@cmd, '--get-all', $var);
@@ -580,67 +643,6 @@ sub config {
 		if ($E->value() == 1) {
 			# Key not found.
 			return;
-		} else {
-			throw $E;
-		}
-	};
-}
-
-
-=item config_bool ( VARIABLE )
-
-Retrieve the bool configuration C<VARIABLE>. The return value
-is usable as a boolean in perl (and C<undef> if it's not defined,
-of course).
-
-This currently wraps command('config') so it is not so fast.
-
-=cut
-
-sub config_bool {
-	my ($self, $var) = _maybe_self(@_);
-
-	try {
-		my @cmd = ('config', '--bool', '--get', $var);
-		unshift @cmd, $self if $self;
-		my $val = command_oneline(@cmd);
-		return undef unless defined $val;
-		return $val eq 'true';
-	} catch Git::Error::Command with {
-		my $E = shift;
-		if ($E->value() == 1) {
-			# Key not found.
-			return undef;
-		} else {
-			throw $E;
-		}
-	};
-}
-
-=item config_int ( VARIABLE )
-
-Retrieve the integer configuration C<VARIABLE>. The return value
-is simple decimal number.  An optional value suffix of 'k', 'm',
-or 'g' in the config file will cause the value to be multiplied
-by 1024, 1048576 (1024^2), or 1073741824 (1024^3) prior to output.
-It would return C<undef> if configuration variable is not defined,
-
-This currently wraps command('config') so it is not so fast.
-
-=cut
-
-sub config_int {
-	my ($self, $var) = _maybe_self(@_);
-
-	try {
-		my @cmd = ('config', '--int', '--get', $var);
-		unshift @cmd, $self if $self;
-		return command_oneline(@cmd);
-	} catch Git::Error::Command with {
-		my $E = shift;
-		if ($E->value() == 1) {
-			# Key not found.
-			return undef;
 		} else {
 			throw $E;
 		}
@@ -689,7 +691,7 @@ The hash is in the format C<refname =\> hash>. For tags, the C<refname> entry
 contains the tag object while a C<refname^{}> entry gives the tagged objects.
 
 C<REPOSITORY> has the same meaning as the appropriate C<git-ls-remote>
-argument; either an URL or a remote name (if called on a repository instance).
+argument; either a URL or a remote name (if called on a repository instance).
 C<GROUPS> is an optional arrayref that can contain 'tags' to return all the
 tags and/or 'heads' to return all the heads. C<REFGLOB> is an optional array
 of strings containing a shell-like glob to further limit the refs returned in
@@ -842,7 +844,7 @@ sub _open_hash_and_insert_object_if_needed {
 
 	($self->{hash_object_pid}, $self->{hash_object_in},
 	 $self->{hash_object_out}, $self->{hash_object_ctx}) =
-		command_bidi_pipe(qw(hash-object -w --stdin-paths --no-filters));
+		$self->command_bidi_pipe(qw(hash-object -w --stdin-paths --no-filters));
 }
 
 sub _close_hash_and_insert_object {
@@ -931,7 +933,7 @@ sub _open_cat_blob_if_needed {
 
 	($self->{cat_blob_pid}, $self->{cat_blob_in},
 	 $self->{cat_blob_out}, $self->{cat_blob_ctx}) =
-		command_bidi_pipe(qw(cat-file --batch));
+		$self->command_bidi_pipe(qw(cat-file --batch));
 }
 
 sub _close_cat_blob {
@@ -1278,6 +1280,14 @@ sub _command_common_pipe {
 # for the given repository and execute the git command.
 sub _cmd_exec {
 	my ($self, @args) = @_;
+	_setup_git_cmd_env($self);
+	_execv_git_cmd(@args);
+	die qq[exec "@args" failed: $!];
+}
+
+# set up the appropriate state for git command
+sub _setup_git_cmd_env {
+	my $self = shift;
 	if ($self) {
 		$self->repo_path() and $ENV{'GIT_DIR'} = $self->repo_path();
 		$self->repo_path() and $self->wc_path()
@@ -1285,8 +1295,6 @@ sub _cmd_exec {
 		$self->wc_path() and chdir($self->wc_path());
 		$self->wc_subdir() and chdir($self->wc_subdir());
 	}
-	_execv_git_cmd(@args);
-	die qq[exec "@args" failed: $!];
 }
 
 # Execute the given Git command ($_[0]) with arguments ($_[1..])

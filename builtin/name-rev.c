@@ -172,7 +172,9 @@ static void show_name(const struct object *obj,
 }
 
 static char const * const name_rev_usage[] = {
-	"git name-rev [options] ( --all | --stdin | <commit>... )",
+	"git name-rev [options] <commit>...",
+	"git name-rev [options] --all",
+	"git name-rev [options] --stdin",
 	NULL
 };
 
@@ -220,7 +222,7 @@ static void name_rev_line(char *p, struct name_ref_data *data)
 
 int cmd_name_rev(int argc, const char **argv, const char *prefix)
 {
-	struct object_array revs = { 0, 0, NULL };
+	struct object_array revs = OBJECT_ARRAY_INIT;
 	int all = 0, transform_stdin = 0, allow_undefined = 1, always = 0;
 	struct name_ref_data data = { 0, 0, NULL };
 	struct option opts[] = {
@@ -289,7 +291,7 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 		max = get_max_object_index();
 		for (i = 0; i < max; i++) {
 			struct object *obj = get_indexed_object(i);
-			if (!obj)
+			if (!obj || obj->type != OBJ_COMMIT)
 				continue;
 			show_name(obj, NULL,
 				  always, allow_undefined, data.name_only);

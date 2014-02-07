@@ -1,6 +1,8 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 
+use 5.008;
 use strict;
+use warnings;
 use Git;
 
 binmode(STDOUT, ":raw");
@@ -43,6 +45,9 @@ my ($diff_new_color) =
 my $normal_color = $repo->get_color("", "reset");
 
 my $use_readkey = 0;
+my $use_termcap = 0;
+my %term_escapes;
+
 sub ReadMode;
 sub ReadKey;
 if ($repo->config_bool("interactive.singlekey")) {
@@ -50,6 +55,14 @@ if ($repo->config_bool("interactive.singlekey")) {
 		require Term::ReadKey;
 		Term::ReadKey->import;
 		$use_readkey = 1;
+	};
+	eval {
+		require Term::Cap;
+		my $termcap = Term::Cap->Tgetent;
+		foreach (values %$termcap) {
+			$term_escapes{$_} = 1 if /^\e/;
+		}
+		$use_termcap = 1;
 	};
 }
 
@@ -87,6 +100,7 @@ my %patch_modes = (
 		TARGET => '',
 		PARTICIPLE => 'staging',
 		FILTER => 'file-only',
+		IS_REVERSE => 0,
 	},
 	'stash' => {
 		DIFF => 'diff-index -p HEAD',
@@ -96,6 +110,7 @@ my %patch_modes = (
 		TARGET => '',
 		PARTICIPLE => 'stashing',
 		FILTER => undef,
+		IS_REVERSE => 0,
 	},
 	'reset_head' => {
 		DIFF => 'diff-index -p --cached',
@@ -105,6 +120,7 @@ my %patch_modes = (
 		TARGET => '',
 		PARTICIPLE => 'unstaging',
 		FILTER => 'index-only',
+		IS_REVERSE => 1,
 	},
 	'reset_nothead' => {
 		DIFF => 'diff-index -R -p --cached',
@@ -114,6 +130,7 @@ my %patch_modes = (
 		TARGET => ' to index',
 		PARTICIPLE => 'applying',
 		FILTER => 'index-only',
+		IS_REVERSE => 0,
 	},
 	'checkout_index' => {
 		DIFF => 'diff-files -p',
@@ -123,6 +140,7 @@ my %patch_modes = (
 		TARGET => ' from worktree',
 		PARTICIPLE => 'discarding',
 		FILTER => 'file-only',
+		IS_REVERSE => 1,
 	},
 	'checkout_head' => {
 		DIFF => 'diff-index -p',
@@ -132,6 +150,7 @@ my %patch_modes = (
 		TARGET => ' from index and worktree',
 		PARTICIPLE => 'discarding',
 		FILTER => undef,
+		IS_REVERSE => 1,
 	},
 	'checkout_nothead' => {
 		DIFF => 'diff-index -R -p',
@@ -141,6 +160,7 @@ my %patch_modes = (
 		TARGET => ' to index and worktree',
 		PARTICIPLE => 'applying',
 		FILTER => undef,
+		IS_REVERSE => 0,
 	},
 );
 
@@ -248,6 +268,7 @@ sub get_empty_tree {
 # FILE:		is file different from index?
 # INDEX_ADDDEL:	is it add/delete between HEAD and index?
 # FILE_ADDDEL:	is it add/delete between index and file?
+# UNMERGED:	is the path unmerged
 
 sub list_modified {
 	my ($only) = @_;
@@ -298,16 +319,10 @@ sub list_modified {
 		}
 	}
 
-	for (run_cmd_pipe(qw(git diff-files --numstat --summary --), @tracked)) {
+	for (run_cmd_pipe(qw(git diff-files --numstat --summary --raw --), @tracked)) {
 		if (($add, $del, $file) =
 		    /^([-\d]+)	([-\d]+)	(.*)/) {
 			$file = unquote_path($file);
-			if (!exists $data{$file}) {
-				$data{$file} = +{
-					INDEX => 'unchanged',
-					BINARY => 0,
-				};
-			}
 			my ($change, $bin);
 			if ($add eq '-' && $del eq '-') {
 				$change = 'binary';
@@ -325,6 +340,18 @@ sub list_modified {
 		       /^ (create|delete) mode [0-7]+ (.*)$/) {
 			$file = unquote_path($file);
 			$data{$file}{FILE_ADDDEL} = $adddel;
+		}
+		elsif (/^:[0-7]+ [0-7]+ [0-9a-f]+ [0-9a-f]+ (.)	(.*)$/) {
+			$file = unquote_path($2);
+			if (!exists $data{$file}) {
+				$data{$file} = +{
+					INDEX => 'unchanged',
+					BINARY => 0,
+				};
+			}
+			if ($1 eq 'U') {
+				$data{$file}{UNMERGED} = 1;
+			}
 		}
 	}
 
@@ -696,7 +723,7 @@ sub add_untracked_cmd {
 sub run_git_apply {
 	my $cmd = shift;
 	my $fh;
-	open $fh, '| git ' . $cmd;
+	open $fh, '| git ' . $cmd . " --recount --allow-overlap";
 	print $fh @_;
 	return close $fh;
 }
@@ -999,10 +1026,12 @@ sub edit_hunk_manually {
 	print $fh "# Manual hunk edit mode -- see bottom for a quick guide\n";
 	print $fh @$oldtext;
 	my $participle = $patch_mode_flavour{PARTICIPLE};
+	my $is_reverse = $patch_mode_flavour{IS_REVERSE};
+	my ($remove_plus, $remove_minus) = $is_reverse ? ('-', '+') : ('+', '-');
 	print $fh <<EOF;
 # ---
-# To remove '-' lines, make them ' ' lines (context).
-# To remove '+' lines, delete them.
+# To remove '$remove_minus' lines, make them ' ' lines (context).
+# To remove '$remove_plus' lines, delete them.
 # Lines starting with # will be removed.
 #
 # If the patch applies cleanly, the edited hunk will immediately be
@@ -1039,7 +1068,7 @@ EOF
 
 sub diff_applies {
 	my $fh;
-	return run_git_apply($patch_mode_flavour{APPLY_CHECK} . ' --recount --check',
+	return run_git_apply($patch_mode_flavour{APPLY_CHECK} . ' --check',
 			     map { @{$_->{TEXT}} } @_);
 }
 
@@ -1056,6 +1085,14 @@ sub prompt_single_character {
 		ReadMode 'cbreak';
 		my $key = ReadKey 0;
 		ReadMode 'restore';
+		if ($use_termcap and $key eq "\e") {
+			while (!defined $term_escapes{$key}) {
+				my $next = ReadKey 0.5;
+				last if (!defined $next);
+				$key .= $next;
+			}
+			$key =~ s/\e/^[/;
+		}
 		print "$key" if defined $key;
 		print "\n";
 		return $key;
@@ -1128,7 +1165,7 @@ EOF
 
 sub apply_patch {
 	my $cmd = shift;
-	my $ret = run_git_apply $cmd . ' --recount', @_;
+	my $ret = run_git_apply $cmd, @_;
 	if (!$ret) {
 		print STDERR @_;
 	}
@@ -1137,17 +1174,17 @@ sub apply_patch {
 
 sub apply_patch_for_checkout_commit {
 	my $reverse = shift;
-	my $applies_index = run_git_apply 'apply '.$reverse.' --cached --recount --check', @_;
-	my $applies_worktree = run_git_apply 'apply '.$reverse.' --recount --check', @_;
+	my $applies_index = run_git_apply 'apply '.$reverse.' --cached --check', @_;
+	my $applies_worktree = run_git_apply 'apply '.$reverse.' --check', @_;
 
 	if ($applies_worktree && $applies_index) {
-		run_git_apply 'apply '.$reverse.' --cached --recount', @_;
-		run_git_apply 'apply '.$reverse.' --recount', @_;
+		run_git_apply 'apply '.$reverse.' --cached', @_;
+		run_git_apply 'apply '.$reverse, @_;
 		return 1;
 	} elsif (!$applies_index) {
 		print colored $error_color, "The selected hunks do not apply to the index!\n";
 		if (prompt_yesno "Apply them to the worktree anyway? ") {
-			return run_git_apply 'apply '.$reverse.' --recount', @_;
+			return run_git_apply 'apply '.$reverse, @_;
 		} else {
 			print colored $error_color, "Nothing was applied.\n";
 			return 0;
@@ -1160,6 +1197,10 @@ sub apply_patch_for_checkout_commit {
 
 sub patch_update_cmd {
 	my @all_mods = list_modified($patch_mode_flavour{FILTER});
+	error_msg "ignoring unmerged: $_->{VALUE}\n"
+		for grep { $_->{UNMERGED} } @all_mods;
+	@all_mods = grep { !$_->{UNMERGED} } @all_mods;
+
 	my @mods = grep { !($_->{BINARY}) } @all_mods;
 	my @them;
 
@@ -1355,14 +1396,13 @@ sub patch_update_file {
 				next;
 			}
 			elsif ($line =~ /^q/i) {
-				while ($ix < $num) {
-					if (!defined $hunk[$ix]{USE}) {
-						$hunk[$ix]{USE} = 0;
+				for ($i = 0; $i < $num; $i++) {
+					if (!defined $hunk[$i]{USE}) {
+						$hunk[$i]{USE} = 0;
 					}
-					$ix++;
 				}
 				$quit = 1;
-				next;
+				last;
 			}
 			elsif ($line =~ m|^/(.*)|) {
 				my $regex = $1;

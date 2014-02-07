@@ -41,6 +41,7 @@ static int reverse;
 static int blank_boundary;
 static int incremental;
 static int xdl_opts;
+static int abbrev = -1;
 
 static enum date_mode blame_date_mode = DATE_ISO8601;
 static size_t blame_date_width;
@@ -83,6 +84,7 @@ struct origin {
 	struct commit *commit;
 	mmfile_t file;
 	unsigned char blob_sha1[20];
+	unsigned mode;
 	char path[FLEX_ARRAY];
 };
 
@@ -92,6 +94,7 @@ struct origin {
  * Return 1 if the conversion succeeds, 0 otherwise.
  */
 int textconv_object(const char *path,
+		    unsigned mode,
 		    const unsigned char *sha1,
 		    char **buf,
 		    unsigned long *buf_size)
@@ -100,7 +103,7 @@ int textconv_object(const char *path,
 	struct userdiff_driver *textconv;
 
 	df = alloc_filespec(path);
-	fill_filespec(df, sha1, S_IFREG | 0664);
+	fill_filespec(df, sha1, mode);
 	textconv = get_textconv(df);
 	if (!textconv) {
 		free_filespec(df);
@@ -125,7 +128,7 @@ static void fill_origin_blob(struct diff_options *opt,
 
 		num_read_blob++;
 		if (DIFF_OPT_TST(opt, ALLOW_TEXTCONV) &&
-		    textconv_object(o->path, o->blob_sha1, &file->ptr, &file_size))
+		    textconv_object(o->path, o->mode, o->blob_sha1, &file->ptr, &file_size))
 			;
 		else
 			file->ptr = read_sha1_file(o->blob_sha1, &type, &file_size);
@@ -313,21 +316,23 @@ static struct origin *get_origin(struct scoreboard *sb,
  * for an origin is also used to pass the blame for the entire file to
  * the parent to detect the case where a child's blob is identical to
  * that of its parent's.
+ *
+ * This also fills origin->mode for corresponding tree path.
  */
-static int fill_blob_sha1(struct origin *origin)
+static int fill_blob_sha1_and_mode(struct origin *origin)
 {
-	unsigned mode;
 	if (!is_null_sha1(origin->blob_sha1))
 		return 0;
 	if (get_tree_entry(origin->commit->object.sha1,
 			   origin->path,
-			   origin->blob_sha1, &mode))
+			   origin->blob_sha1, &origin->mode))
 		goto error_out;
 	if (sha1_object_info(origin->blob_sha1, NULL) != OBJ_BLOB)
 		goto error_out;
 	return 0;
  error_out:
 	hashclr(origin->blob_sha1);
+	origin->mode = S_IFINVALID;
 	return -1;
 }
 
@@ -360,12 +365,14 @@ static struct origin *find_origin(struct scoreboard *sb,
 			/*
 			 * If the origin was newly created (i.e. get_origin
 			 * would call make_origin if none is found in the
-			 * scoreboard), it does not know the blob_sha1,
+			 * scoreboard), it does not know the blob_sha1/mode,
 			 * so copy it.  Otherwise porigin was in the
-			 * scoreboard and already knows blob_sha1.
+			 * scoreboard and already knows blob_sha1/mode.
 			 */
-			if (porigin->refcnt == 1)
+			if (porigin->refcnt == 1) {
 				hashcpy(porigin->blob_sha1, cached->blob_sha1);
+				porigin->mode = cached->mode;
+			}
 			return porigin;
 		}
 		/* otherwise it was not very useful; free it */
@@ -400,6 +407,7 @@ static struct origin *find_origin(struct scoreboard *sb,
 		/* The path is the same as parent */
 		porigin = get_origin(sb, parent, origin->path);
 		hashcpy(porigin->blob_sha1, origin->blob_sha1);
+		porigin->mode = origin->mode;
 	} else {
 		/*
 		 * Since origin->path is a pathspec, if the parent
@@ -425,6 +433,7 @@ static struct origin *find_origin(struct scoreboard *sb,
 		case 'M':
 			porigin = get_origin(sb, parent, origin->path);
 			hashcpy(porigin->blob_sha1, p->one->sha1);
+			porigin->mode = p->one->mode;
 			break;
 		case 'A':
 		case 'T':
@@ -444,6 +453,7 @@ static struct origin *find_origin(struct scoreboard *sb,
 
 		cached = make_origin(porigin->commit, porigin->path);
 		hashcpy(cached->blob_sha1, porigin->blob_sha1);
+		cached->mode = porigin->mode;
 		parent->util = cached;
 	}
 	return porigin;
@@ -486,6 +496,7 @@ static struct origin *find_rename(struct scoreboard *sb,
 		    !strcmp(p->two->path, origin->path)) {
 			porigin = get_origin(sb, parent, p->one->path);
 			hashcpy(porigin->blob_sha1, p->one->sha1);
+			porigin->mode = p->one->mode;
 			break;
 		}
 	}
@@ -1099,6 +1110,7 @@ static int find_copy_in_parent(struct scoreboard *sb,
 
 			norigin = get_origin(sb, parent, p->one->path);
 			hashcpy(norigin->blob_sha1, p->one->sha1);
+			norigin->mode = p->one->mode;
 			fill_origin_blob(&sb->revs->diffopt, norigin, &file_p);
 			if (!file_p.ptr)
 				continue;
@@ -1301,8 +1313,7 @@ static void pass_blame(struct scoreboard *sb, struct origin *origin, int opt)
 /*
  * Information on commits, used for output.
  */
-struct commit_info
-{
+struct commit_info {
 	const char *author;
 	const char *author_mail;
 	unsigned long author_time;
@@ -1367,7 +1378,7 @@ static void get_ac_line(const char *inbuf, const char *what,
 	timepos = tmp;
 
 	*tmp = 0;
-	while (person < tmp && *tmp != ' ')
+	while (person < tmp && !(*tmp == ' ' && tmp[1] == '<'))
 		tmp--;
 	if (tmp <= person)
 		return;
@@ -1407,7 +1418,8 @@ static void get_commit_info(struct commit *commit,
 			    int detailed)
 {
 	int len;
-	char *tmp, *endp, *reencoded, *message;
+	const char *subject;
+	char *reencoded, *message;
 	static char author_name[1024];
 	static char author_mail[1024];
 	static char committer_name[1024];
@@ -1449,22 +1461,13 @@ static void get_commit_info(struct commit *commit,
 		    &ret->committer_time, &ret->committer_tz);
 
 	ret->summary = summary_buf;
-	tmp = strstr(message, "\n\n");
-	if (!tmp) {
-	error_out:
+	len = find_commit_subject(message, &subject);
+	if (len && len < sizeof(summary_buf)) {
+		memcpy(summary_buf, subject, len);
+		summary_buf[len] = 0;
+	} else {
 		sprintf(summary_buf, "(%s)", sha1_to_hex(commit->object.sha1));
-		free(reencoded);
-		return;
 	}
-	tmp += 2;
-	endp = strchr(tmp, '\n');
-	if (!endp)
-		endp = tmp + strlen(tmp);
-	len = endp - tmp;
-	if (len >= sizeof(summary_buf) || len == 0)
-		goto error_out;
-	memcpy(summary_buf, tmp, len);
-	summary_buf[len] = 0;
 	free(reencoded);
 }
 
@@ -1481,13 +1484,14 @@ static void write_filename_info(const char *path)
 /*
  * Porcelain/Incremental format wants to show a lot of details per
  * commit.  Instead of repeating this every line, emit it only once,
- * the first time each commit appears in the output.
+ * the first time each commit appears in the output (unless the
+ * user has specifically asked for us to repeat).
  */
-static int emit_one_suspect_detail(struct origin *suspect)
+static int emit_one_suspect_detail(struct origin *suspect, int repeat)
 {
 	struct commit_info ci;
 
-	if (suspect->commit->object.flags & METAINFO_SHOWN)
+	if (!repeat && (suspect->commit->object.flags & METAINFO_SHOWN))
 		return 0;
 
 	suspect->commit->object.flags |= METAINFO_SHOWN;
@@ -1526,7 +1530,7 @@ static void found_guilty_entry(struct blame_entry *ent)
 		printf("%s %d %d %d\n",
 		       sha1_to_hex(suspect->commit->object.sha1),
 		       ent->s_lno + 1, ent->lno + 1, ent->num_lines);
-		emit_one_suspect_detail(suspect);
+		emit_one_suspect_detail(suspect, 0);
 		write_filename_info(suspect->path);
 		maybe_flush_or_die(stdout, "stdout");
 	}
@@ -1594,7 +1598,7 @@ static const char *format_time(unsigned long time, const char *tz_str,
 	int tz;
 
 	if (show_raw_time) {
-		sprintf(time_buf, "%lu %s", time, tz_str);
+		snprintf(time_buf, sizeof(time_buf), "%lu %s", time, tz_str);
 	}
 	else {
 		tz = atoi(tz_str);
@@ -1614,9 +1618,20 @@ static const char *format_time(unsigned long time, const char *tz_str,
 #define OUTPUT_SHOW_NUMBER	040
 #define OUTPUT_SHOW_SCORE      0100
 #define OUTPUT_NO_AUTHOR       0200
+#define OUTPUT_SHOW_EMAIL	0400
+#define OUTPUT_LINE_PORCELAIN 01000
 
-static void emit_porcelain(struct scoreboard *sb, struct blame_entry *ent)
+static void emit_porcelain_details(struct origin *suspect, int repeat)
 {
+	if (emit_one_suspect_detail(suspect, repeat) ||
+	    (suspect->commit->object.flags & MORE_THAN_ONE_PATH))
+		write_filename_info(suspect->path);
+}
+
+static void emit_porcelain(struct scoreboard *sb, struct blame_entry *ent,
+			   int opt)
+{
+	int repeat = opt & OUTPUT_LINE_PORCELAIN;
 	int cnt;
 	const char *cp;
 	struct origin *suspect = ent->suspect;
@@ -1629,17 +1644,18 @@ static void emit_porcelain(struct scoreboard *sb, struct blame_entry *ent)
 	       ent->s_lno + 1,
 	       ent->lno + 1,
 	       ent->num_lines);
-	if (emit_one_suspect_detail(suspect) ||
-	    (suspect->commit->object.flags & MORE_THAN_ONE_PATH))
-		write_filename_info(suspect->path);
+	emit_porcelain_details(suspect, repeat);
 
 	cp = nth_line(sb, ent->lno);
 	for (cnt = 0; cnt < ent->num_lines; cnt++) {
 		char ch;
-		if (cnt)
+		if (cnt) {
 			printf("%s %d %d\n", hex,
 			       ent->s_lno + 1 + cnt,
 			       ent->lno + 1 + cnt);
+			if (repeat)
+				emit_porcelain_details(suspect, 1);
+		}
 		putchar('\t');
 		do {
 			ch = *cp++;
@@ -1667,7 +1683,7 @@ static void emit_other(struct scoreboard *sb, struct blame_entry *ent, int opt)
 	cp = nth_line(sb, ent->lno);
 	for (cnt = 0; cnt < ent->num_lines; cnt++) {
 		char ch;
-		int length = (opt & OUTPUT_LONG_OBJECT_NAME) ? 40 : 8;
+		int length = (opt & OUTPUT_LONG_OBJECT_NAME) ? 40 : abbrev;
 
 		if (suspect->commit->object.flags & UNINTERESTING) {
 			if (blank_boundary)
@@ -1679,12 +1695,17 @@ static void emit_other(struct scoreboard *sb, struct blame_entry *ent, int opt)
 		}
 
 		printf("%.*s", length, hex);
-		if (opt & OUTPUT_ANNOTATE_COMPAT)
-			printf("\t(%10s\t%10s\t%d)", ci.author,
+		if (opt & OUTPUT_ANNOTATE_COMPAT) {
+			const char *name;
+			if (opt & OUTPUT_SHOW_EMAIL)
+				name = ci.author_mail;
+			else
+				name = ci.author;
+			printf("\t(%10s\t%10s\t%d)", name,
 			       format_time(ci.author_time, ci.author_tz,
 					   show_raw_time),
 			       ent->lno + 1 + cnt);
-		else {
+		} else {
 			if (opt & OUTPUT_SHOW_SCORE)
 				printf(" %*d %02d",
 				       max_score_digits, ent->score,
@@ -1697,9 +1718,15 @@ static void emit_other(struct scoreboard *sb, struct blame_entry *ent, int opt)
 				       ent->s_lno + 1 + cnt);
 
 			if (!(opt & OUTPUT_NO_AUTHOR)) {
-				int pad = longest_author - utf8_strwidth(ci.author);
+				const char *name;
+				int pad;
+				if (opt & OUTPUT_SHOW_EMAIL)
+					name = ci.author_mail;
+				else
+					name = ci.author;
+				pad = longest_author - utf8_strwidth(name);
 				printf(" (%s%*s %10s",
-				       ci.author, pad, "",
+				       name, pad, "",
 				       format_time(ci.author_time,
 						   ci.author_tz,
 						   show_raw_time));
@@ -1741,7 +1768,7 @@ static void output(struct scoreboard *sb, int option)
 
 	for (ent = sb->ent; ent; ent = ent->next) {
 		if (option & OUTPUT_PORCELAIN)
-			emit_porcelain(sb, ent);
+			emit_porcelain(sb, ent, option);
 		else {
 			emit_other(sb, ent, option);
 		}
@@ -1802,18 +1829,6 @@ static int read_ancestry(const char *graft_file)
 }
 
 /*
- * How many columns do we need to show line numbers in decimal?
- */
-static int lineno_width(int lines)
-{
-	int i, width;
-
-	for (width = 1, i = 10; i <= lines; width++)
-		i *= 10;
-	return width;
-}
-
-/*
  * How many columns do we need to show line numbers, authors,
  * and filenames?
  */
@@ -1837,7 +1852,10 @@ static void find_alignment(struct scoreboard *sb, int *option)
 		if (!(suspect->commit->object.flags & METAINFO_SHOWN)) {
 			suspect->commit->object.flags |= METAINFO_SHOWN;
 			get_commit_info(suspect->commit, &ci, 1);
-			num = utf8_strwidth(ci.author);
+			if (*option & OUTPUT_SHOW_EMAIL)
+				num = utf8_strwidth(ci.author_mail);
+			else
+				num = utf8_strwidth(ci.author);
 			if (longest_author < num)
 				longest_author = num;
 		}
@@ -1850,9 +1868,9 @@ static void find_alignment(struct scoreboard *sb, int *option)
 		if (largest_score < ent_score(sb, e))
 			largest_score = ent_score(sb, e);
 	}
-	max_orig_digits = lineno_width(longest_src_lines);
-	max_digits = lineno_width(longest_dst_lines);
-	max_score_digits = lineno_width(largest_score);
+	max_orig_digits = decimal_width(longest_src_lines);
+	max_digits = decimal_width(longest_dst_lines);
+	max_score_digits = decimal_width(largest_score);
 }
 
 /*
@@ -2020,14 +2038,8 @@ static int git_blame_config(const char *var, const char *value, void *cb)
 		return 0;
 	}
 
-	switch (userdiff_config(var, value)) {
-	case 0:
-		break;
-	case -1:
+	if (userdiff_config(var, value) < 0)
 		return -1;
-	default:
-		return 0;
-	}
 
 	return git_default_config(var, value, cb);
 }
@@ -2066,6 +2078,7 @@ static struct commit *fake_working_tree_commit(struct diff_options *opt,
 	if (!contents_from || strcmp("-", contents_from)) {
 		struct stat st;
 		const char *read_from;
+		char *buf_ptr;
 		unsigned long buf_len;
 
 		if (contents_from) {
@@ -2083,8 +2096,8 @@ static struct commit *fake_working_tree_commit(struct diff_options *opt,
 		switch (st.st_mode & S_IFMT) {
 		case S_IFREG:
 			if (DIFF_OPT_TST(opt, ALLOW_TEXTCONV) &&
-			    textconv_object(read_from, null_sha1, &buf.buf, &buf_len))
-				buf.len = buf_len;
+			    textconv_object(read_from, mode, null_sha1, &buf_ptr, &buf_len))
+				strbuf_attach(&buf, buf_ptr, buf_len, buf_len + 1);
 			else if (strbuf_read_file(&buf, read_from, st.st_size) != st.st_size)
 				die_errno("cannot open or read '%s'", read_from);
 			break;
@@ -2282,16 +2295,20 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 		OPT_BIT('f', "show-name", &output_option, "Show original filename (Default: auto)", OUTPUT_SHOW_NAME),
 		OPT_BIT('n', "show-number", &output_option, "Show original linenumber (Default: off)", OUTPUT_SHOW_NUMBER),
 		OPT_BIT('p', "porcelain", &output_option, "Show in a format designed for machine consumption", OUTPUT_PORCELAIN),
+		OPT_BIT(0, "line-porcelain", &output_option, "Show porcelain format with per-line commit information", OUTPUT_PORCELAIN|OUTPUT_LINE_PORCELAIN),
 		OPT_BIT('c', NULL, &output_option, "Use the same output mode as git-annotate (Default: off)", OUTPUT_ANNOTATE_COMPAT),
 		OPT_BIT('t', NULL, &output_option, "Show raw timestamp (Default: off)", OUTPUT_RAW_TIMESTAMP),
 		OPT_BIT('l', NULL, &output_option, "Show long commit SHA1 (Default: off)", OUTPUT_LONG_OBJECT_NAME),
 		OPT_BIT('s', NULL, &output_option, "Suppress author name and timestamp (Default: off)", OUTPUT_NO_AUTHOR),
+		OPT_BIT('e', "show-email", &output_option, "Show author email instead of name (Default: off)", OUTPUT_SHOW_EMAIL),
 		OPT_BIT('w', NULL, &xdl_opts, "Ignore whitespace differences", XDF_IGNORE_WHITESPACE),
+		OPT_BIT(0, "minimal", &xdl_opts, "Spend extra cycles to find better match", XDF_NEED_MINIMAL),
 		OPT_STRING('S', NULL, &revs_file, "file", "Use revisions from <file> instead of calling git-rev-list"),
 		OPT_STRING(0, "contents", &contents_from, "file", "Use <file>'s contents as the final image"),
 		{ OPTION_CALLBACK, 'C', NULL, &opt, "score", "Find line copies within and across files", PARSE_OPT_OPTARG, blame_copy_callback },
 		{ OPTION_CALLBACK, 'M', NULL, &opt, "score", "Find line movements within and across files", PARSE_OPT_OPTARG, blame_move_callback },
 		OPT_CALLBACK('L', NULL, &bottomtop, "n,m", "Process only line range n,m, counting from 1", blame_bottomtop_callback),
+		OPT__ABBREV(&abbrev),
 		OPT_END()
 	};
 
@@ -2306,8 +2323,8 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 	save_commit_buffer = 0;
 	dashdash_pos = 0;
 
-	parse_options_start(&ctx, argc, argv, prefix, PARSE_OPT_KEEP_DASHDASH |
-			    PARSE_OPT_KEEP_ARGV0);
+	parse_options_start(&ctx, argc, argv, prefix, options,
+			    PARSE_OPT_KEEP_DASHDASH | PARSE_OPT_KEEP_ARGV0);
 	for (;;) {
 		switch (parse_options_step(&ctx, options, blame_opt_usage)) {
 		case PARSE_OPT_HELP:
@@ -2326,6 +2343,11 @@ int cmd_blame(int argc, const char **argv, const char *prefix)
 	}
 parse_done:
 	argc = parse_options_end(&ctx);
+
+	if (abbrev == -1)
+		abbrev = default_abbrev;
+	/* one more abbrev length is needed for the boundary commit */
+	abbrev++;
 
 	if (revs_file && read_ancestry(revs_file))
 		die_errno("reading graft file '%s' failed", revs_file);
@@ -2463,11 +2485,11 @@ parse_done:
 	}
 	else {
 		o = get_origin(&sb, sb.final, path);
-		if (fill_blob_sha1(o))
+		if (fill_blob_sha1_and_mode(o))
 			die("no such path %s in %s", path, final_commit_name);
 
 		if (DIFF_OPT_TST(&sb.revs->diffopt, ALLOW_TEXTCONV) &&
-		    textconv_object(path, o->blob_sha1, (char **) &sb.final_buf,
+		    textconv_object(path, o->mode, o->blob_sha1, (char **) &sb.final_buf,
 				    &sb.final_buf_size))
 			;
 		else

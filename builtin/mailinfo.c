@@ -250,8 +250,17 @@ static void cleanup_subject(struct strbuf *subject)
 			    (7 <= remove &&
 			     memmem(subject->buf + at, remove, "PATCH", 5)))
 				strbuf_remove(subject, at, remove);
-			else
+			else {
 				at += remove;
+				/*
+				 * If the input had a space after the ], keep
+				 * it.  We don't bother with finding the end of
+				 * the space, since we later normalize it
+				 * anyway.
+				 */
+				if (isspace(subject->buf[at]))
+					at += 1;
+			}
 			continue;
 		}
 		break;
@@ -400,7 +409,7 @@ static int read_one_header_line(struct strbuf *line, FILE *in)
 			break;
 		if (strbuf_getline(&continuation, in, '\n'))
 			break;
-		continuation.buf[0] = '\n';
+		continuation.buf[0] = ' ';
 		strbuf_rtrim(&continuation);
 		strbuf_addbuf(line, &continuation);
 	}
@@ -1032,7 +1041,7 @@ int cmd_mailinfo(int argc, const char **argv, const char *prefix)
 	 */
 	git_config(git_mailinfo_config, NULL);
 
-	def_charset = (git_commit_encoding ? git_commit_encoding : "UTF-8");
+	def_charset = get_commit_output_encoding();
 	metainfo_charset = def_charset;
 
 	while (1 < argc && argv[1][0] == '-') {

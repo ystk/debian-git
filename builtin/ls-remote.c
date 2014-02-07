@@ -5,7 +5,7 @@
 
 static const char ls_remote_usage[] =
 "git ls-remote [--heads] [--tags]  [-u <exec> | --upload-pack <exec>]\n"
-"                     [-q|--quiet] [<repository> [<refs>...]]";
+"                     [-q|--quiet] [--exit-code] [<repository> [<refs>...]]";
 
 /*
  * Is there one among the list of patterns that match the tail part
@@ -32,9 +32,10 @@ int cmd_ls_remote(int argc, const char **argv, const char *prefix)
 {
 	int i;
 	const char *dest = NULL;
-	int nongit;
 	unsigned flags = 0;
+	int get_url = 0;
 	int quiet = 0;
+	int status = 0;
 	const char *uploadpack = NULL;
 	const char **pattern = NULL;
 
@@ -42,7 +43,8 @@ int cmd_ls_remote(int argc, const char **argv, const char *prefix)
 	struct transport *transport;
 	const struct ref *ref;
 
-	setup_git_directory_gently(&nongit);
+	if (argc == 2 && !strcmp("-h", argv[1]))
+		usage(ls_remote_usage);
 
 	for (i = 1; i < argc; i++) {
 		const char *arg = argv[i];
@@ -72,6 +74,15 @@ int cmd_ls_remote(int argc, const char **argv, const char *prefix)
 				quiet = 1;
 				continue;
 			}
+			if (!strcmp("--get-url", arg)) {
+				get_url = 1;
+				continue;
+			}
+			if (!strcmp("--exit-code", arg)) {
+				/* return this code if no refs are reported */
+				status = 2;
+				continue;
+			}
 			usage(ls_remote_usage);
 		}
 		dest = arg;
@@ -97,6 +108,12 @@ int cmd_ls_remote(int argc, const char **argv, const char *prefix)
 	}
 	if (!remote->url_nr)
 		die("remote %s has no configured URL", dest);
+
+	if (get_url) {
+		printf("%s\n", *remote->url);
+		return 0;
+	}
+
 	transport = transport_get(remote, NULL);
 	if (uploadpack != NULL)
 		transport_set_option(transport, TRANS_OPT_UPLOADPACK, uploadpack);
@@ -113,6 +130,7 @@ int cmd_ls_remote(int argc, const char **argv, const char *prefix)
 		if (!tail_match(pattern, ref->name))
 			continue;
 		printf("%s	%s\n", sha1_to_hex(ref->old_sha1), ref->name);
+		status = 0; /* we found something */
 	}
-	return 0;
+	return status;
 }

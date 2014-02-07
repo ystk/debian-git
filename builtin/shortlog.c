@@ -29,9 +29,6 @@ static int compare_by_number(const void *a1, const void *a2)
 		return -1;
 }
 
-const char *format_subject(struct strbuf *sb, const char *msg,
-			   const char *line_separator);
-
 static void insert_one_record(struct shortlog *log,
 			      const char *author,
 			      const char *oneline)
@@ -141,9 +138,8 @@ void shortlog_add_commit(struct shortlog *log, struct commit *commit)
 	const char *author = NULL, *buffer;
 	struct strbuf buf = STRBUF_INIT;
 	struct strbuf ufbuf = STRBUF_INIT;
-	struct pretty_print_context ctx = {0};
 
-	pretty_print_commit(CMIT_FMT_RAW, commit, &buf, &ctx);
+	pp_commit_easy(CMIT_FMT_RAW, commit, &buf);
 	buffer = buf.buf;
 	while (*buffer && *buffer != '\n') {
 		const char *eol = strchr(buffer, '\n');
@@ -158,15 +154,16 @@ void shortlog_add_commit(struct shortlog *log, struct commit *commit)
 		buffer = eol;
 	}
 	if (!author)
-		die("Missing author: %s",
+		die(_("Missing author: %s"),
 		    sha1_to_hex(commit->object.sha1));
 	if (log->user_format) {
 		struct pretty_print_context ctx = {0};
+		ctx.fmt = CMIT_FMT_USERFORMAT;
 		ctx.abbrev = log->abbrev;
 		ctx.subject = "";
 		ctx.after_subject = "";
 		ctx.date_mode = DATE_NORMAL;
-		pretty_print_commit(CMIT_FMT_USERFORMAT, commit, &ufbuf, &ctx);
+		pretty_print_commit(&ctx, commit, &ufbuf);
 		buffer = ufbuf.buf;
 	} else if (*buffer) {
 		buffer++;
@@ -181,7 +178,7 @@ static void get_from_rev(struct rev_info *rev, struct shortlog *log)
 	struct commit *commit;
 
 	if (prepare_revision_walk(rev))
-		die("revision walk setup failed");
+		die(_("revision walk setup failed"));
 	while ((commit = get_revision(rev)) != NULL)
 		shortlog_add_commit(log, commit);
 }
@@ -249,7 +246,7 @@ int cmd_shortlog(int argc, const char **argv, const char *prefix)
 {
 	static struct shortlog log;
 	static struct rev_info rev;
-	int nongit;
+	int nongit = !startup_info->have_repository;
 
 	static const struct option options[] = {
 		OPT_BOOLEAN('n', "numbered", &log.sort_by_number,
@@ -265,12 +262,11 @@ int cmd_shortlog(int argc, const char **argv, const char *prefix)
 
 	struct parse_opt_ctx_t ctx;
 
-	prefix = setup_git_directory_gently(&nongit);
 	git_config(git_default_config, NULL);
 	shortlog_init(&log);
 	init_revisions(&rev, prefix);
-	parse_options_start(&ctx, argc, argv, prefix, PARSE_OPT_KEEP_DASHDASH |
-			    PARSE_OPT_KEEP_ARGV0);
+	parse_options_start(&ctx, argc, argv, prefix, options,
+			    PARSE_OPT_KEEP_DASHDASH | PARSE_OPT_KEEP_ARGV0);
 
 	for (;;) {
 		switch (parse_options_step(&ctx, options, shortlog_usage)) {
@@ -285,7 +281,7 @@ parse_done:
 	argc = parse_options_end(&ctx);
 
 	if (setup_revisions(argc, argv, &rev, NULL) != 1) {
-		error("unrecognized argument: %s", argv[1]);
+		error(_("unrecognized argument: %s"), argv[1]);
 		usage_with_options(shortlog_usage, options);
 	}
 
@@ -297,7 +293,7 @@ parse_done:
 		add_head_to_pending(&rev);
 	if (rev.pending.nr == 0) {
 		if (isatty(0))
-			fprintf(stderr, "(reading log message from standard input)\n");
+			fprintf(stderr, _("(reading log message from standard input)\n"));
 		read_from_stdin(&log);
 	}
 	else

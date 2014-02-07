@@ -28,6 +28,24 @@
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 #define bitsizeof(x)  (CHAR_BIT * sizeof(x))
 
+#define maximum_signed_value_of_type(a) \
+    (INTMAX_MAX >> (bitsizeof(intmax_t) - bitsizeof(a)))
+
+#define maximum_unsigned_value_of_type(a) \
+    (UINTMAX_MAX >> (bitsizeof(uintmax_t) - bitsizeof(a)))
+
+/*
+ * Signed integer overflow is undefined in C, so here's a helper macro
+ * to detect if the sum of two integers will overflow.
+ *
+ * Requires: a >= 0, typeof(a) equals typeof(b)
+ */
+#define signed_add_overflows(a, b) \
+    ((b) > maximum_signed_value_of_type(a) - (a))
+
+#define unsigned_add_overflows(a, b) \
+    ((b) > maximum_unsigned_value_of_type(a) - (a))
+
 #ifdef __GNUC__
 #define TYPEOF(x) (__typeof__(x))
 #else
@@ -92,9 +110,20 @@
 #include <assert.h>
 #include <regex.h>
 #include <utime.h>
-#ifndef __MINGW32__
-#include <sys/wait.h>
+#include <syslog.h>
+#ifndef NO_SYS_POLL_H
 #include <sys/poll.h>
+#else
+#include <poll.h>
+#endif
+#if defined(__MINGW32__)
+/* pull in Windows compatibility stuff */
+#include "compat/mingw.h"
+#elif defined(_MSC_VER)
+#include "compat/msvc.h"
+#else
+#include <sys/wait.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -106,7 +135,12 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <pwd.h>
+#include <sys/un.h>
+#ifndef NO_INTTYPES_H
 #include <inttypes.h>
+#else
+#include <stdint.h>
+#endif
 #if defined(__CYGWIN__)
 #undef _XOPEN_SOURCE
 #include <grp.h>
@@ -117,12 +151,6 @@
 #include <grp.h>
 #define _ALL_SOURCE 1
 #endif
-#else 	/* __MINGW32__ */
-/* pull in Windows compatibility stuff */
-#include "compat/mingw.h"
-#endif	/* __MINGW32__ */
-#ifdef _MSC_VER
-#include "compat/msvc.h"
 #endif
 
 #ifndef NO_LIBGEN_H
@@ -160,6 +188,10 @@ extern char *gitbasename(char *);
 #define PRIx32 "x"
 #endif
 
+#ifndef PRIo32
+#define PRIo32 "o"
+#endif
+
 #ifndef PATH_SEP
 #define PATH_SEP ':'
 #endif
@@ -183,7 +215,14 @@ extern char *gitbasename(char *);
 #define is_dir_sep(c) ((c) == '/')
 #endif
 
-#ifdef __GNUC__
+#ifndef find_last_dir_sep
+#define find_last_dir_sep(path) strrchr(path, '/')
+#endif
+
+#if defined(__HP_cc) && (__HP_cc >= 61000)
+#define NORETURN __attribute__((noreturn))
+#define NORETURN_PTR
+#elif defined(__GNUC__) && !defined(NO_NORETURN)
 #define NORETURN __attribute__((__noreturn__))
 #define NORETURN_PTR __attribute__((__noreturn__))
 #elif defined(_MSC_VER)
@@ -201,6 +240,7 @@ extern char *gitbasename(char *);
 
 /* General helper functions */
 extern void vreportf(const char *prefix, const char *err, va_list params);
+extern void vwritef(int fd, const char *prefix, const char *err, va_list params);
 extern NORETURN void usage(const char *err);
 extern NORETURN void usagef(const char *err, ...) __attribute__((format (printf, 1, 2)));
 extern NORETURN void die(const char *err, ...) __attribute__((format (printf, 1, 2)));
@@ -209,6 +249,7 @@ extern int error(const char *err, ...) __attribute__((format (printf, 1, 2)));
 extern void warning(const char *err, ...) __attribute__((format (printf, 1, 2)));
 
 extern void set_die_routine(NORETURN_PTR void (*routine)(const char *err, va_list params));
+extern void set_error_routine(void (*routine)(const char *err, va_list params));
 
 extern int prefixcmp(const char *str, const char *prefix);
 extern int suffixcmp(const char *str, const char *suffix);
@@ -310,6 +351,13 @@ extern size_t gitstrlcpy(char *, const char *, size_t);
 #ifdef NO_STRTOUMAX
 #define strtoumax gitstrtoumax
 extern uintmax_t gitstrtoumax(const char *, char **, int);
+#define strtoimax gitstrtoimax
+extern intmax_t gitstrtoimax(const char *, char **, int);
+#endif
+
+#ifdef NO_STRTOK_R
+#define strtok_r gitstrtok_r
+extern char *gitstrtok_r(char *s, const char *delim, char **save_ptr);
 #endif
 
 #ifdef NO_HSTRERROR
@@ -365,6 +413,14 @@ static inline void *gitmempcpy(void *dest, const void *src, size_t n)
 }
 #endif
 
+#ifdef NO_INET_PTON
+int inet_pton(int af, const char *src, void *dst);
+#endif
+
+#ifdef NO_INET_NTOP
+const char *inet_ntop(int af, const void *src, char *dst, size_t size);
+#endif
+
 extern void release_pack_memory(size_t, int);
 
 typedef void (*try_to_free_t)(size_t);
@@ -383,6 +439,7 @@ extern ssize_t xwrite(int fd, const void *buf, size_t len);
 extern int xdup(int fd);
 extern FILE *xfdopen(int fd, const char *mode);
 extern int xmkstemp(char *template);
+extern int xmkstemp_mode(char *template, int mode);
 extern int odb_mkstemp(char *template, size_t limit, const char *pattern);
 extern int odb_pack_keep(char *name, size_t namesz, unsigned char *sha1);
 
@@ -400,12 +457,17 @@ static inline int has_extension(const char *filename, const char *ext)
 	return len > extlen && !memcmp(filename + len - extlen, ext, extlen);
 }
 
+/* in ctype.c, for kwset users */
+extern const char tolower_trans_tbl[256];
+
 /* Sane ctype - no locale, and works with signed chars */
 #undef isascii
 #undef isspace
 #undef isdigit
 #undef isalpha
 #undef isalnum
+#undef islower
+#undef isupper
 #undef tolower
 #undef toupper
 extern unsigned char sane_ctype[256];
@@ -414,22 +476,37 @@ extern unsigned char sane_ctype[256];
 #define GIT_ALPHA 0x04
 #define GIT_GLOB_SPECIAL 0x08
 #define GIT_REGEX_SPECIAL 0x10
+#define GIT_PATHSPEC_MAGIC 0x20
 #define sane_istest(x,mask) ((sane_ctype[(unsigned char)(x)] & (mask)) != 0)
 #define isascii(x) (((x) & ~0x7f) == 0)
 #define isspace(x) sane_istest(x,GIT_SPACE)
 #define isdigit(x) sane_istest(x,GIT_DIGIT)
 #define isalpha(x) sane_istest(x,GIT_ALPHA)
 #define isalnum(x) sane_istest(x,GIT_ALPHA | GIT_DIGIT)
+#define islower(x) sane_iscase(x, 1)
+#define isupper(x) sane_iscase(x, 0)
 #define is_glob_special(x) sane_istest(x,GIT_GLOB_SPECIAL)
 #define is_regex_special(x) sane_istest(x,GIT_GLOB_SPECIAL | GIT_REGEX_SPECIAL)
 #define tolower(x) sane_case((unsigned char)(x), 0x20)
 #define toupper(x) sane_case((unsigned char)(x), 0)
+#define is_pathspec_magic(x) sane_istest(x,GIT_PATHSPEC_MAGIC)
 
 static inline int sane_case(int x, int high)
 {
 	if (sane_istest(x, GIT_ALPHA))
 		x = (x & ~0x20) | high;
 	return x;
+}
+
+static inline int sane_iscase(int x, int is_lower)
+{
+	if (!sane_istest(x, GIT_ALPHA))
+		return 0;
+
+	if (is_lower)
+		return (x & 0x20) != 0;
+	else
+		return (x & 0x20) == 0;
 }
 
 static inline int strtoul_ui(char const *s, int base, unsigned int *result)
@@ -488,6 +565,19 @@ void git_qsort(void *base, size_t nmemb, size_t size,
 #define fstat_is_reliable() 0
 #else
 #define fstat_is_reliable() 1
+#endif
+
+#ifndef va_copy
+/*
+ * Since an obvious implementation of va_list would be to make it a
+ * pointer into the stack frame, a simple assignment will work on
+ * many systems.  But let's try to be more portable.
+ */
+#ifdef __va_copy
+#define va_copy(dst, src) __va_copy(dst, src)
+#else
+#define va_copy(dst, src) ((dst) = (src))
+#endif
 #endif
 
 /*
