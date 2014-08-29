@@ -341,8 +341,7 @@ static void fetch_alternates(struct walker *walker, const char *base)
 	if (walker->get_verbosely)
 		fprintf(stderr, "Getting alternates list for %s\n", base);
 
-	url = xmalloc(strlen(base) + 31);
-	sprintf(url, "%s/objects/info/http-alternates", base);
+	url = xstrfmt("%s/objects/info/http-alternates", base);
 
 	/*
 	 * Use a callback to process the result, since another request
@@ -396,7 +395,7 @@ static int fetch_indices(struct walker *walker, struct alt_base *repo)
 	return ret;
 }
 
-static int fetch_pack(struct walker *walker, struct alt_base *repo, unsigned char *sha1)
+static int http_fetch_pack(struct walker *walker, struct alt_base *repo, unsigned char *sha1)
 {
 	struct packed_git *target;
 	int ret;
@@ -524,7 +523,7 @@ static int fetch(struct walker *walker, unsigned char *sha1)
 	if (!fetch_object(walker, altbase, sha1))
 		return 0;
 	while (altbase) {
-		if (!fetch_pack(walker, altbase, sha1))
+		if (!http_fetch_pack(walker, altbase, sha1))
 			return 0;
 		fetch_alternates(walker, data->alt->base);
 		altbase = altbase->next;
@@ -566,8 +565,7 @@ struct walker *get_http_walker(const char *url)
 	struct walker *walker = xmalloc(sizeof(struct walker));
 
 	data->alt = xmalloc(sizeof(*data->alt));
-	data->alt->base = xmalloc(strlen(url) + 1);
-	strcpy(data->alt->base, url);
+	data->alt->base = xstrdup(url);
 	for (s = data->alt->base + strlen(data->alt->base) - 1; *s == '/'; --s)
 		*s = 0;
 

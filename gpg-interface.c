@@ -7,6 +7,20 @@
 static char *configured_signing_key;
 static const char *gpg_program = "gpg";
 
+void signature_check_clear(struct signature_check *sigc)
+{
+	free(sigc->payload);
+	free(sigc->gpg_output);
+	free(sigc->gpg_status);
+	free(sigc->signer);
+	free(sigc->key);
+	sigc->payload = NULL;
+	sigc->gpg_output = NULL;
+	sigc->gpg_status = NULL;
+	sigc->signer = NULL;
+	sigc->key = NULL;
+}
+
 void set_signing_key(const char *key)
 {
 	free(configured_signing_key);
@@ -30,7 +44,7 @@ const char *get_signing_key(void)
 {
 	if (configured_signing_key)
 		return configured_signing_key;
-	return git_committer_info(IDENT_ERROR_ON_NO_NAME|IDENT_NO_DATE);
+	return git_committer_info(IDENT_STRICT|IDENT_NO_DATE);
 }
 
 /*
@@ -96,45 +110,59 @@ int sign_buffer(struct strbuf *buffer, struct strbuf *signature, const char *sig
 /*
  * Run "gpg" to see if the payload matches the detached signature.
  * gpg_output, when set, receives the diagnostic output from GPG.
+ * gpg_status, when set, receives the status output from GPG.
  */
 int verify_signed_buffer(const char *payload, size_t payload_size,
 			 const char *signature, size_t signature_size,
-			 struct strbuf *gpg_output)
+			 struct strbuf *gpg_output, struct strbuf *gpg_status)
 {
 	struct child_process gpg;
-	const char *args_gpg[] = {NULL, "--verify", "FILE", "-", NULL};
+	const char *args_gpg[] = {NULL, "--status-fd=1", "--verify", "FILE", "-", NULL};
 	char path[PATH_MAX];
 	int fd, ret;
+	struct strbuf buf = STRBUF_INIT;
+	struct strbuf *pbuf = &buf;
 
 	args_gpg[0] = gpg_program;
 	fd = git_mkstemp(path, PATH_MAX, ".git_vtag_tmpXXXXXX");
 	if (fd < 0)
-		return error("could not create temporary file '%s': %s",
+		return error(_("could not create temporary file '%s': %s"),
 			     path, strerror(errno));
 	if (write_in_full(fd, signature, signature_size) < 0)
-		return error("failed writing detached signature to '%s': %s",
+		return error(_("failed writing detached signature to '%s': %s"),
 			     path, strerror(errno));
 	close(fd);
 
 	memset(&gpg, 0, sizeof(gpg));
 	gpg.argv = args_gpg;
 	gpg.in = -1;
+	gpg.out = -1;
 	if (gpg_output)
 		gpg.err = -1;
-	args_gpg[2] = path;
+	args_gpg[3] = path;
 	if (start_command(&gpg)) {
 		unlink(path);
-		return error("could not run gpg.");
+		return error(_("could not run gpg."));
 	}
 
 	write_in_full(gpg.in, payload, payload_size);
 	close(gpg.in);
 
-	if (gpg_output)
+	if (gpg_output) {
 		strbuf_read(gpg_output, gpg.err, 0);
+		close(gpg.err);
+	}
+	if (gpg_status)
+		pbuf = gpg_status;
+	strbuf_read(pbuf, gpg.out, 0);
+	close(gpg.out);
+
 	ret = finish_command(&gpg);
 
 	unlink_or_warn(path);
+
+	ret |= !strstr(pbuf->buf, "\n[GNUPG:] GOODSIG ");
+	strbuf_release(&buf); /* no matter it was used or not */
 
 	return ret;
 }

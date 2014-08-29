@@ -3,11 +3,11 @@
 test_description='test fetching over git protocol'
 . ./test-lib.sh
 
-LIB_GIT_DAEMON_PORT=${LIB_GIT_DAEMON_PORT-5570}
 . "$TEST_DIRECTORY"/lib-git-daemon.sh
 start_git_daemon
 
 test_expect_success 'setup repository' '
+	git config push.default matching &&
 	echo content >file &&
 	git add file &&
 	git commit -m one
@@ -36,7 +36,7 @@ test_expect_success 'fetch changes via git protocol' '
 	test_cmp file clone/file
 '
 
-test_expect_failure 'remote detects correct HEAD' '
+test_expect_success 'remote detects correct HEAD' '
 	git push public master:other &&
 	(cd clone &&
 	 git remote set-head -d origin &&
@@ -103,14 +103,12 @@ test_remote_error()
 		esac
 	done
 
-	if test $# -ne 3
-	then
-		error "invalid number of arguments"
-	fi
-
+	msg=$1
+	shift
 	cmd=$1
-	repo=$2
-	msg=$3
+	shift
+	repo=$1
+	shift || error "invalid number of arguments"
 
 	if test -x "$GIT_DAEMON_DOCUMENT_ROOT_PATH/$repo"
 	then
@@ -122,27 +120,26 @@ test_remote_error()
 		fi
 	fi
 
-	test_must_fail git "$cmd" "$GIT_DAEMON_URL/$repo" 2>output &&
-	echo "fatal: remote error: $msg: /$repo" >expect &&
-	test_cmp expect output
+	test_must_fail git "$cmd" "$GIT_DAEMON_URL/$repo" "$@" 2>output &&
+	test_i18ngrep "fatal: remote error: $msg: /$repo" output &&
 	ret=$?
 	chmod +x "$GIT_DAEMON_DOCUMENT_ROOT_PATH/repo.git"
 	(exit $ret)
 }
 
 msg="access denied or repository not exported"
-test_expect_success 'clone non-existent' "test_remote_error    clone nowhere.git '$msg'"
-test_expect_success 'push disabled'      "test_remote_error    push  repo.git    '$msg'"
-test_expect_success 'read access denied' "test_remote_error -x fetch repo.git    '$msg'"
-test_expect_success 'not exported'       "test_remote_error -n fetch repo.git    '$msg'"
+test_expect_success 'clone non-existent' "test_remote_error    '$msg' clone nowhere.git    "
+test_expect_success 'push disabled'      "test_remote_error    '$msg' push  repo.git master"
+test_expect_success 'read access denied' "test_remote_error -x '$msg' fetch repo.git       "
+test_expect_success 'not exported'       "test_remote_error -n '$msg' fetch repo.git       "
 
 stop_git_daemon
 start_git_daemon --informative-errors
 
-test_expect_success 'clone non-existent' "test_remote_error    clone nowhere.git 'no such repository'"
-test_expect_success 'push disabled'      "test_remote_error    push  repo.git    'service not enabled'"
-test_expect_success 'read access denied' "test_remote_error -x fetch repo.git    'no such repository'"
-test_expect_success 'not exported'       "test_remote_error -n fetch repo.git    'repository not exported'"
+test_expect_success 'clone non-existent' "test_remote_error    'no such repository'      clone nowhere.git    "
+test_expect_success 'push disabled'      "test_remote_error    'service not enabled'     push  repo.git master"
+test_expect_success 'read access denied' "test_remote_error -x 'no such repository'      fetch repo.git       "
+test_expect_success 'not exported'       "test_remote_error -n 'repository not exported' fetch repo.git       "
 
 stop_git_daemon
 test_done

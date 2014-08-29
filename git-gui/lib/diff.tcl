@@ -287,6 +287,9 @@ proc start_show_diff {cont_info {add_opts {}}} {
 	if {$w eq $ui_index} {
 		lappend cmd diff-index
 		lappend cmd --cached
+		if {[git-version >= "1.7.2"]} {
+			lappend cmd --ignore-submodules=dirty
+		}
 	} elseif {$w eq $ui_workdir} {
 		if {[string first {U} $m] >= 0} {
 			lappend cmd diff
@@ -764,8 +767,15 @@ proc apply_range_or_line {x y} {
 				# context line
 				set ln [$ui_diff get $i_l $next_l]
 				set patch "$patch$pre_context$ln"
-				set n [expr $n+1]
-				set m [expr $m+1]
+				# Skip the "\ No newline at end of
+				# file". Depending on the locale setting
+				# we don't know what this line looks
+				# like exactly. The only thing we do
+				# know is that it starts with "\ "
+				if {![string match {\\ *} $ln]} {
+					set n [expr $n+1]
+					set m [expr $m+1]
+				}
 				set pre_context {}
 			} elseif {$c1 eq $to_context} {
 				# turn change line into context line

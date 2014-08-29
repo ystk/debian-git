@@ -11,7 +11,8 @@ valid_ref() {
 		prereq=$1
 		shift
 	esac
-	test_expect_success $prereq "ref name '$1' is valid${2:+ with options $2}" "
+	desc="ref name '$1' is valid${2:+ with options $2}"
+	test_expect_success $prereq "$desc" "
 		git check-ref-format $2 '$1'
 	"
 }
@@ -22,7 +23,8 @@ invalid_ref() {
 		prereq=$1
 		shift
 	esac
-	test_expect_success $prereq "ref name '$1' is invalid${2:+ with options $2}" "
+	desc="ref name '$1' is invalid${2:+ with options $2}"
+	test_expect_success $prereq "$desc" "
 		test_must_fail git check-ref-format $2 '$1'
 	"
 }
@@ -46,6 +48,7 @@ invalid_ref './foo/bar'
 invalid_ref 'foo/./bar'
 invalid_ref 'foo/bar/.'
 invalid_ref '.refs/foo'
+invalid_ref 'refs/heads/foo.'
 invalid_ref 'heads/foo..bar'
 invalid_ref 'heads/foo?bar'
 valid_ref 'foo./bar'
