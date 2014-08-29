@@ -1,13 +1,635 @@
-git (1:1.7.10.4-1+wheezy1) testing; urgency=low
+git (1:2.1.0-1) unstable; urgency=low
 
-  * debian/diff/0013-git-svn-use-YAML-format-...diff: new from 1.7.11:
-    git svn: use YAML format for mergeinfo cache when possible.
+  * new upstream release (see RelNotes/2.1.0.txt).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Fri, 15 Aug 2014 16:09:26 -0700
+
+git (1:2.1.0~rc1-1) unstable; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 05 Aug 2014 13:59:00 -0700
+
+git (1:2.0.1-1) unstable; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 25 Jun 2014 15:09:25 -0700
+
+git (1:2.0.0-2) unstable; urgency=low
+
+  * debian/rules: drop obsolete THREADED_DELTA_SEARCH setting.
+  * debian/rules: add SANE_TOOL_PATH= INSTALL=install TAR=tar to
+    OPTS to fix the Dyson build (thx Игорь Пашев; closes:
+    #734097).
+  * debian/rules: remove NO_PYTHON=1 now that the git_remote_helpers
+    library has been removed.
+  * debian/rules: remove git-p4 and its documentation from the git,
+    git-man, and git-doc packages.  It depends on Perforce, which is
+    not part of Debian.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 17 Jun 2014 16:17:46 -0700
+
+git (1:2.0.0-1) unstable; urgency=low
+
+  * new upstream release (see RelNotes/2.0.0.txt).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 28 May 2014 16:06:41 -0700
+
+git (1:2.0.0~rc4-1) unstable; urgency=low
+
+  * new upstream release candidate.
+  * remove source-highlight build dependency since the markup
+    requiring it was removed upstream (thx Anders Kaserog;
+    LP: #1316810).
+  * remove git-bzr package to make room for a package built from
+    https://github.com/felipec/git-remote-bzr.
+    * debian/control: remove references to git-bzr package.
+    * debian/control: remove Build-Depends: bzr, python-bzrlib.
+    * debian/rules: remove rules to build, install, and clean
+      git-remote-bzr.
+    * debian/git-doc.docs: do not install git-remote-bzr.html.
+    * debian/git-remote-bzr.txt, debian/git-bzr.postinst,
+      debian/git-bzr.prerm, debian/git-bzr.README.Debian: remove.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 21 May 2014 11:34:56 -0700
+
+git (1:2.0.0~rc2-1) unstable; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 05 May 2014 17:25:50 -0700
+
+git (1:2.0.0~rc0-2) unstable; urgency=low
+
+  [ Anders Kaseorg ]
+  * add source-highlight build dependency (closes: #745591).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 23 Apr 2014 11:09:25 -0700
+
+git (1:2.0.0~rc0-1) unstable; urgency=low
+
+  * new upstream release candidate.
+  * debian/diff/0009-contrib-subtree-unset-prefix-before-....diff:
+    remove; applied upstream.
+  * update debian/copyright.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Fri, 18 Apr 2014 17:01:04 -0700
+
+git (1:1.9.2-1) unstable; urgency=low
+
+  * new upstream point release.
+    * wt-status: subject full label string to l10n (thx Raphaël
+      Hertzog; closes: #725777).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 09 Apr 2014 15:15:18 -0700
+
+git (1:1.9.1-1) unstable; urgency=low
+
+  * new upstream point release.
+
+  [ Jonathan Nieder ]
+  * git-email: Recommends: libio-socket-ssl-perl (>= 1.951) since
+    earlier versions do not use OpenSSL's defaults when ca_path
+    and ca_file are unset.
+
+  [ Gilles Filippini ]
+  * install git-subtree from contrib (closes: #704652).
+  * debian/diff/0009-contrib-subtree-unset-prefix-before-proceeding.diff:
+    new; unset the 'prefix' environment variable before proceeding.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 18 Mar 2014 15:58:46 -0700
+
+git (1:1.9.0-1) unstable; urgency=low
+
+  * new upstream release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 18 Feb 2014 08:31:49 -0800
+
+git (1:1.9.0~rc3-1) unstable; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Fri, 07 Feb 2014 15:53:52 -0800
+
+git (1:1.9~rc1-1) unstable; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 27 Jan 2014 14:07:56 -0800
+
+git (1:1.9~rc0-1) unstable; urgency=low
+
+  * new upstream release candidate.
+  * debian/diff:
+    * 0001-remove-interpreter-line-from-shell-libraries.diff:
+      remove; applied upstream.
+    * 0002...0009: rename to 0001-*, ..., 0008-*.
+    * 0010-git-remote-mediawiki-do-not-remove-installed-...diff:
+      remove; applied upstream.
+  * debian/rules install: no more need to include DESTDIR in
+    mw-to-git INSTLIBDIR.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 27 Jan 2014 13:05:17 -0800
+
+git (1:1.8.5.3-1) unstable; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 16 Jan 2014 16:18:25 -0800
+
+git (1:1.8.5.2-2) unstable; urgency=low
+
+  * /etc/bash_completion.d/git-prompt: check for git-sh-prompt
+    and do not source it if git is removed but not purged (thx
+    Craig Small; closes: #726669).
+  * debian/control: package git Breaks: git-buildpackage versions
+    that rely on output from 'git status' without the --porcelain
+    flag (closes: #734223).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 09 Jan 2014 14:46:23 -0800
+
+git (1:1.8.5.2-1) unstable; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 17 Dec 2013 16:31:01 -0800
+
+git (1:1.8.5.1-1) unstable; urgency=medium
+
+  * new upstream point release.
+    * submodule: do not copy unknown update mode from .gitmodules.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 03 Dec 2013 14:12:55 -0800
+
+git (1:1.8.5-1) unstable; urgency=low
+
+  * new upstream release.
+  * merge branch debian-experimental.
+  * git-daemon-sysvinit: advertise GIT_DAEMON_BASE_PATH in
+    /etc/default/git-daemon (thx Alexander Dahl and Antonio
+    Ospite; closes: #704985).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sat, 30 Nov 2013 11:28:02 -0800
+
+git (1:1.8.5~rc3-1) experimental; urgency=low
+
+  * new upstream release candidate.
+
+  [ Anders Kaseorg ]
+  * debian/rules: pass $(OPTS) to contrib/mw-to-git/Makefile
+    (closes: #729763).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 21 Nov 2013 16:35:29 -0800
+
+git (1:1.8.5~rc2-1) experimental; urgency=low
+
+  * merge branch debian-sid.
+  * new upstream release candidate.
+
+  [ Thorsten Glaser ]
+  * package mw-to-git (closes: #718395).
+    * debian/control: new package git-mediawiki; Depends:
+      libmediawiki-api-perl (>= 0.39), liblwp-protocol-https-perl,
+      libdatetime-format-iso8601-perl; package git now Suggests
+      and git-all Depends: git-mediawiki.
+    * debian/rules: build and install Git::Mediawiki perl module,
+      mediawiki remote helper, and 'git mw' command in
+      git-mediawiki package.
+    * debian/diff/0010-git-remote-mediawiki-do-not-remove-...diff:
+      new from upstream: mw-to-git: do not remove installed files
+      in "clean" target.
+    * debian/git-mediawiki.docs: install git-remote-mediawiki.txt.
+
+  [ Anders Kaseorg ]
+  * debian/diff/0003-transport-expose-git_tcp_connect-...diff:
+    include tcp.h before using tcp functions (closes: #728508).
+
+  [ Jonathan Nieder ]
+  * debian/diff/0012-cvsserver-Determinize-output-to-...diff:
+    remove; applied upstream.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 13 Nov 2013 16:12:29 -0800
+
+
+git (1:1.8.4.4-1) unstable; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 21 Nov 2013 17:51:36 -0800
+
+git (1:1.8.4.3-1) unstable; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 11 Nov 2013 15:51:10 -0800
+
+git (1:1.8.5~rc0-1) experimental; urgency=low
+
+  * new upstream release candidate.
+  * debian/diff:
+    * 0001-hooks-post-receive-email-set-encoding-to-utf-8.diff,
+      0002-post-receive-email-defend-against-non-utf8-...diff:
+      remove; applied upstream.
+    * 0003...0012: rename to 0001-*, ..., 0010-*.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 30 Oct 2013 16:01:15 -0700
+
+git (1:1.8.4.2-1) unstable; urgency=low
+
+  * new upstream point release.
+  * debian/diff/0012-cvsserver-Determinize-output-to-...diff:
+    new from upstream: sort cvsserver output to combat Perl 5.18
+    hash randomization (thx Anders Kaseorg; closes: #727226).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 30 Oct 2013 16:00:07 -0700
+
+git (1:1.8.4.1-1) unstable; urgency=low
+
+  * merge branch debian-experimental.
+  * new upstream point release.
+  * debian/control: Build-Depends tcl instead of tcl8.5
+    (closes: #725961).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 21 Oct 2013 11:46:45 -0700
+
+git (1:1.8.4-1) experimental; urgency=low
+
+  * new upstream release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sat, 24 Aug 2013 14:50:38 -0700
+
+git (1:1.8.4~rc4-1) experimental; urgency=low
+
+  * new upstream release candidate.
+  * debian/diff/0012-*, 0013-*: remove; applied upstream.
+  * debian/rules: define .NOTPARALLEL to avoid races between
+    "make" child processes (thx Anders Kaseorg; closes: #720274).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 19 Aug 2013 22:41:08 -0700
+
+git (1:1.8.4~rc3-1) unstable; urgency=low
+
+  * new upstream release candidate.
+    * switch de translation from pure German to German+English.
+  * debian/diff/:
+    * 0012-Revert-git-stash-avoid-data-loss-when-....diff: new
+      from upstream: stash: omit too-slow check for files
+      replaced by directories before stashing.
+    * 0013-Revert-Add-new-shortcut-for-HEAD.diff: new from
+      upstream: treat "@" and names like "refs/heads/@/foo" as
+      ordinary refnames again.
+  * debian/control: Vcs-Git: https://repo.or.cz/r/git/debian.git/
+    (thx brian m. carlson; closes: #719932).
+  * debian/git.README.source: suggest developing against
+    https://repo.or.cz/r/git/debian.git/.
+  * debian/watch: use xz-compressed tars from kernel.org again.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sun, 18 Aug 2013 03:41:49 -0700
+
+git (1:1.8.4~rc2-1) unstable; urgency=low
+
+  * new upstream release candidate.
+    * cat-file: do not split --batch input lines on whitespace
+      (thx Joey Hess; closes: #718517).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sat, 10 Aug 2013 12:25:45 -0700
+
+git (1:1.8.4~rc1-1) unstable; urgency=low
+
+  * new upstream release candidate.
+  * debian/watch: point to code.google.com again.
+  * debian/git.preinst:
+    * check that targets in /var/cache/git/* exist when
+      creating symlinks from /var/lib/git/ (thx Steve Cotton and
+      Christoph Anton Mitterer; closes: #718411).
+    * remove spurious '/var/lib/git/*' symlink from the upgrade
+      to 1:1.8.4~rc0-1.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 01 Aug 2013 23:14:58 -0700
+
+git (1:1.8.4~rc0-1) unstable; urgency=low
+
+  * new upstream release candidate.
+  * use /var/lib/git instead of /var/cache/git as default git
+    project root to comply with the Filesystem Hierarchy Standard
+    (thx Julian Gilbey; closes: #483788):
+    * git-daemon.default, git-daemon.in, git-daemon/run: use
+      base path of /var/lib and projectroot of /var/lib/git.
+    * gitweb.conf: $projectroot = "/var/lib/git".
+    * rules: package git: install empty /var/lib/git directory
+      instead of /var/cache/git.
+    * git.README.Debian, git-daemon-run.README.Debian,
+      git-daemon-sysvinit.README.Debian, gitweb.README.Debian:
+      update for the new project root.
+    * git.preinst: install symlinks /var/lib/git/* ->
+      ../../cache/git/*.
+    * git.NEWS.Debian: advertise the change and explain how to
+      adapt to it.
+  * update debian/copyright.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 30 Jul 2013 19:11:14 -0700
+
+git (1:1.8.3.2-1) unstable; urgency=low
+
+  * new upstream point release (see RelNotes/1.8.3.2.txt).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 01 Jul 2013 19:20:03 -0700
+
+git (1:1.8.3.1-1) unstable; urgency=low
+
+  * merge branch debian-experimental
+  * new upstream point release (see RelNotes/1.8.3.1.txt).
+  * debian/watch: use xz-compressed tarballs from kernel.org.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 12 Jun 2013 07:50:53 -0700
+
+git (1:1.8.3-1) experimental; urgency=low
+
+  * new upstream release (see RelNotes/1.8.3.txt).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 29 May 2013 22:32:40 -0700
+
+git (1:1.8.3~rc3-1) experimental; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sun, 19 May 2013 11:49:16 -0700
+
+git (1:1.8.3~rc2-1) experimental; urgency=low
+
+  * new upstream release candidate.
+    * gitk: "grep diff" pickaxe variant (closes: #589283).
+  * debian/rules: install perl modules with correct permissions
+    (thx Christian Schwartz for suggesting it through lintian).
+  * move "git svn" perl helpers to the git-svn package.
+    * debian/rules: install Git::SVN and Git::SVN::* to the
+      git-svn package, not git.
+    * debian/control: git-svn: Breaks: and Replaces: old git.
+  * debian/rules: install perl module manpages to git-man and
+    git-svn packages, as appropriate.
+  * debian/rules: mark hooks in /usr/share/git-core/contrib/hooks/
+    as executable (thx Olivier Berger; closes: #687391).
+  * debian/control: drop Depends: and Build-Depends: libc6.1
+    (>= 2.10.2-6) [ia64] workaround for #563882, since that bug did
+    not affect any stable release.
+  * debian/control: drop dependencies on pre-Debian 5.0 (lenny)
+    packages.
+    * do not accept libcurl3-gnutls-dev as a substitute for
+      libcurl4-gnutls-dev.
+    * do not accept libsvn-core-perl as a substitute for
+      libsvn-perl.
+    * make asciidoc, docbook-xsl, runit, and tk dependencies
+      unversioned.
+    * git, git-man, git-cvs, git-svn, git-email, gitk: drop Breaks
+      and Replaces against cogito (<< 0.16rc2-0).
+    * git: drop Breaks against old qgit and git-buildpackage.
+    * git: drop Conflicts against git-core (<< 1:1.5.2~rc3-2.).
+    * git-gui: no longer Replaces git-core (<< 1:1.5.2.2-3).
+  * Use source format 3.0 (quilt).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 15 May 2013 00:20:06 -0700
+
+git (1:1.8.3~rc1-1) experimental; urgency=low
+
+  * new upstream release candidate.
+    * log --pretty: avoid undefined behavior in %>, %<, %><'s
+      truncation support (closes: #706400).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Fri, 03 May 2013 23:28:04 -0700
+
+git (1:1.8.3~rc0-1) experimental; urgency=low
+
+  * new upstream release candidate.
+    * remote-bzr: respect bzr "author" field in import (closes:
+      #705245).
+    * remote-bzr: allow re-add of a deleted file in the same commit
+      (closes: #704913, #704959).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 29 Apr 2013 00:29:14 -0700
+
+git (1:1.8.2.1-1) experimental; urgency=low
+
+  * new upstream point release (see RelNotes/1.8.2.1.txt).
+  * debian/implicit:
+    * check for debian/changelog.upstream.
+    * %.deb-DEBIAN-md5sums depends on /usr/share/doc/$pkg/doc/,
+      doc-base/, and lintian/ directories.
+    * do not remove files named after implicit targets.
+  * debian/rules:
+    * respect <num> in DEB_BUILD_OPTIONS=parallel=<num>.
+    * do not create ./changelog symlink (avoiding a race).
+    * override implicit git-core.deb-docs target, since git-core does
+      not have its own doc/ directory.
+  * debian/README.source: point to git.README.source (thx Helmut
+    Grohne; closes: #704580)
+  * debian/git.NEWS.Debian: add leading spaces before tab for
+    changelog parsers (thx Russ Allbery for suggesting it through
+    lintian).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 08 Apr 2013 00:46:02 -0700
+
+git (1:1.8.2-1) experimental; urgency=low
+
+  * new upstream release (see RelNotes/1.8.2.txt).
+  * package the bzr remote helper (closes: #702697).
+    * debian/control: new package git-bzr; Priority: extra; Provides:
+      git-remote-bzr; Depends: python, python-bzrlib; Conflicts:
+      bzr-git; Build-Depends: bzr, python, python-bzrlib for tests;
+      package git now Suggests and git-all Recommends: git-bzr.
+    * debian/git-remote-bzr.txt: new; explain usage.
+    * debian/rules: build git-remote-bzr documentation, munge script
+      shebang line, and install manpage (git-remote-bzr--git.1.gz)
+      and script (/usr/lib/git-core/git-remote-bzr--git) in git-bzr
+      package.
+    * debian/git-doc.docs: install git-remote-bzr.html.
+    * debian/git-bzr.postinst, debian/git-bzr.prerm: new; provide
+      /usr/bin/git-remote-bzr through the alternatives system.
+    * debian/git-bzr.README.Debian: new; explain how to get started.
+  * debian/control: Standards-Version: 3.9.4.0.
+  * debian/rules: define %.install depending on install-arch or
+    install-indep as appropriate for each package.
+  * debian/implicit: depend on %.install instead of both install-arch
+    and install-indep so "debian/rules binary-arch" does not try to
+    build documentation.
+  * debian/rules build-indep, install-indep: build documentation even
+    if asciidoc is not installed.  Build-Depends: dpkg-dev (>= 1.16.2).
+  * debian/rules: handle DEB_BUILD_OPTIONS=parallel=<num>.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sun, 31 Mar 2013 22:06:58 -0700
+
+git (1:1.8.2~rc3-1) experimental; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sat, 09 Mar 2013 00:50:39 -0800
+
+git (1:1.8.2~rc2-1) experimental; urgency=low
+
+  * new upstream release candidate.
+    * skip readlink() of entries in GIT_CEILING_DIRECTORIES after an
+      empty entry (thx Anders Kaseorg and Michael Haggerty).
+  * update debian/copyright.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sun, 03 Mar 2013 15:22:27 -0800
+
+git (1:1.8.2~rc1-1) experimental; urgency=low
+
+  * new upstream release candidate.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sat, 02 Mar 2013 13:27:28 -0800
+
+git (1:1.8.2~rc0-1) experimental; urgency=low
+
+  * new upstream release candidate.
+    * push: require force for refs under refs/tags/.
+    * push: require force for annotated tags.
+  * debian/git.NEWS.Debian: advertise upcoming change to default
+    behavior of argumentless "git push [<remote>]".
+  * git-svn: no longer Depends: libwww-perl (thx RjY; closes:
+    #699536).
+  * update debian/copyright (closes: #699930).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 18 Feb 2013 16:52:57 -0800
+
+git (1:1.8.1.3-1) experimental; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 07 Feb 2013 23:08:48 -0800
+
+git (1:1.8.1.2-1) experimental; urgency=low
+
+  * new upstream point release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Sun, 03 Feb 2013 23:01:24 -0800
+
+git (1:1.8.1.1-1) experimental; urgency=low
+
+  [ Jonathan Nieder ]
+  * debian/git.NEWS.Debian: bash completion script moved to
+    /usr/share/bash-completion/completions/ (thx Philipp Marek;
+    closes: #698055).
+
+  [ Gerrit Pape ]
+  * new upstream release.
+
+ -- Gerrit Pape <pape@smarden.org>  Wed, 16 Jan 2013 08:17:53 +0000
+
+git (1:1.8.1-1) experimental; urgency=low
+
+  * new upstream release (see RelNotes/1.8.1.txt).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 31 Dec 2012 18:40:24 -0800
+
+git (1:1.8.1~rc3-1) experimental; urgency=low
+
+  * new upstream release candidate.
+  * grep: enable perl regex (-P) support (thx Guido Günther; closes:
+    #669376).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 25 Dec 2012 23:40:08 -0800
+
+git (1:1.8.1~rc0-1) experimental; urgency=low
+
+  * new upstream release candidate.
+  * debian/control: mark all binary packages Multi-Arch: foreign (thx
+    Colin Watson; closes: #694651).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Thu, 06 Dec 2012 15:10:21 -0800
+
+git (1:1.8.0-1) experimental; urgency=low
+
+  * new upstream release (see RelNotes/1.7.11.txt, RelNotes/1.7.12.txt,
+    RelNotes/1.8.0.txt)
+    * git-svn: ignore SIGPIPE so serf can recover from HTTP timeouts
+      (closes: #526989).
+    * git-svn: use platform specific auth providers.
+    * git-svn: handle errors and concurrent commits in dcommit
+      (closes: #676904).
+    * am: support --include option.
+    * grep: add a grep.patternType configuration setting.
+    * daemon: --access-hook for authentication logging and policy.
+    * merge-base: expose --is-ancestor helper for scripts.
+    * branch: support --set-upstream-to with simpler syntax than
+      --set-upstream.
+    * format-patch: do not use bogus email addresses in message ids.
+    * http: trim trailing newline from /etc/mailname.
+    * do not ignore port in ssh URLs with ipv6 literals
+      (closes: #646178).
+    * look in ~/.config/git/config (XDG_CONFIG_HOME can override this)
+      before ~/.gitconfig for configuration.
+    * [core] excludesfile and attributes file default to
+      ~/.config/git/ignore and ~/.config/git/attributes.
+    * var doc: advertise current DEFAULT_PAGER and DEFAULT_EDITOR
+      settings (closes: #666250).
+    * git-blame.el: address elisp warnings from emacs:
+      * use mapc instead of mapchar (closes: #611931).
+      * do not use goto-line in lisp code (closes: #611933).
+      * use with-current-buffer where appropriate (closes: #611932).
+    * cli: add Italian and Vietnamese translations.
+    * push: introduce new push.default mode "simple".  It will be the
+      default in the next major release.
+
+  [ Jonathan Nieder ]
+  * debian/diff:
+    * 0013...0031: remove; applied upstream.
+    * 0012-Makefile-add-a-knob-to-turn-off-...diff: remove; fixed
+      upstream.
+  * debian/rules:
+    * install German translation.
+    * use NO_INSTALL_HARDLINKS=1 instead of NO_HARDLINKS=1 in OPTS
+      (thx Tomáš Myšík and Anders Kaseorg; see #683568).
+    * install-arch: sanity-check that built-ins still do not approach
+      btrfs hardlink limit (see #642603).
+    * git: install git-prompt.sh from contrib/completion to
+      /usr/lib/git-core/git-sh-prompt.
+    * git: install completion script to
+      /usr/share/bash-completion/completions/{git,gitk} instead of
+      /etc/bash_completion.d.  This allows bash-completion 2.0 to load
+      it on the fly when completing arguments to git commands.
+  * debian/control: Breaks: bash-completion (<< 1:1.90-1).
+  * debian/git.preinst, debian/git.postinst, debian/git.postrm:
+    remove /etc/bash_completion.d/git on upgrade if unmodified.
+  * debian/rules, debian/git.conffiles, debian/git-prompt.completion:
+    /etc/bash_completion.d/git-prompt: new; source
+    /usr/lib/git-core/git-sh-prompt so .bashrc files that rely on the
+    completion lib defining __git_ps1 can continue to work (thx Danny
+    Yates and Anders Kaseorg).
+  * debian/git.conffiles: remove /etc/bash_completion.d/git.
+  * update debian/copyright.
+  * debian/control: gitweb: Recommends: libhttp-date-perl or
+    libtime-module-perl for If-Modified-Since support; Build-Depends:
+    same to support test suite.
+  * debian/implicit: use order-only dependencies so "debian/rules
+    binary-arch" does not try to build documentation.
+
+  [ Gerrit Pape ]
+  * new upstream release.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 31 Oct 2012 17:58:10 -0700
+
+git (1:1.7.10.4-2) unstable; urgency=low
+
+  * debian/diff:
+    * 0013...0030: new from the upstream 'master' branch: git svn:
+      adapt to svn 1.7 changes:
+      * normalize paths and URLs passed to Subversion (thx Michael G.
+        Schwern; closes: #678137)
+      * use correct "svn cp" syntax when checking git svn's mangling
+        of @-signs in branch names (svn became stricter).
+      * commit filetype changes between a regular file and symlink as
+        replacement (deletion followed by addition) instead of
+        modification of files.  Otherwise, clients pulling the change
+        with "svn update" hit an assertion failure (svn issue 4091).
+    * 0031-git-svn-use-YAML-format-...diff: new from 1.7.11: git svn:
+      use YAML format for mergeinfo cache when possible.
   * debian/control: git-svn: Depends: libyaml-perl for platform- and
     version-independent .git/svn/.caches format; Build-Depends:
     libyaml-perl for tests (thx Tim Retout for the analysis; closes:
     #587650).
 
- -- Jonathan Nieder <jrnieder@gmail.com>  Sun, 18 Nov 2012 11:45:41 -0800
+ -- Jonathan Nieder <jrnieder@gmail.com>  Fri, 12 Oct 2012 13:27:36 -0700
 
 git (1:1.7.10.4-1) unstable; urgency=low
 

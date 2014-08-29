@@ -1,9 +1,9 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Contact: git@vger.kernel.org
-Source: http://code.google.com/p/git-core/downloads/list
+Source: https://www.kernel.org/pub/software/scm/git/
 
 Files: *
-Copyright: © 2005-2012, Linus Torvalds and others.
+Copyright: © 2005-2014, Linus Torvalds and others.
 License: GPL-2
 
 Files: xdiff/*
@@ -15,21 +15,34 @@ Copyright: © 2010, Google Inc.
            and other copyright owners as documented in JGit's IP log.
 License: EDL-1.0
 
-Files: gitk-git/*
-Copyright: © 2005-2011, Paul Mackerras, et al.
+Files: ewah/*
+Copyright: © 2013, GitHub Inc.
+           © 2009-2013, Daniel Lemire, Cliff Moon,
+	       David McIntosh, Rober Becho, Google Inc. and Veronika Zenz
 License: GPL-2+
+
+Files: gitk-git/*
+Copyright: © 2005-2014, Paul Mackerras, et al.
+License: GPL-2+
+
+Files: gitk-git/po/bg.po
+Copyright: © 2014, Alexander Shopov <ash@kambanaria.org>
+License: GPL-2
+Comment: This file is distributed under the same license as the git package.
 
 Files: git-gui/*
 Copyright: © 2005-2010, Shawn Pearce, et. al.
 License: GPL-2+
 
-Files: git-gui/po/de.po git-gui/po/fr.po git-gui/po/glossary/*
+Files: git-gui/po/bg.po git-gui/po/de.po git-gui/po/fr.po git-gui/po/glossary/*
 Copyright: © 2007-2008, Shawn Pearce, et al.
+           © 2012-2014, Alexander Shopov <ash@kambanaria.org>
 License: GPL-2
 Comment: This file is distributed under the same license as the git package.
 
-Files: git-gui/po/glossary/pt_br.po
+Files: git-gui/po/glossary/el.po git-gui/po/glossary/pt_br.po
 Copyright: © 2007, Shawn Pearce, et al.
+           © 2009, Jimmy Angelakos
 License: GPL-2+
 Comment: This file is distributed under the same license as the git-gui package.
 
@@ -40,13 +53,18 @@ Copyright: © 2007, Fredrik Kuivinen <frekui@gmail.com>
            © 2011, John 'Warthog9' Hawley <warthog9@eaglescrag.net>
 License: GPL-2+
 
+Files: git-p4
+Copyright: © 2007, Simon Hausmann <simon@lst.de>
+           © 2007, Trolltech ASA
+License: Expat
+
 Files: git-svn.perl
 Copyright: © 2006, Eric Wong <normalperson@yhbt.net>
 License: GPL-2+
 
 Files: vcs-svn/*
 Copyright: © 2010, David Barr <david.barr@cordelta.com>
-           © 2008, Jason Evans <jasone@canonware.com>
+           © 2010, Jonathan Nieder <jrnieder@gmail.com>
            © 2005, Stefan Hegny, hydrografix Consulting GmbH,
                    Frankfurt/Main, Germany
                    and others, see http://svn2cc.sarovar.org
@@ -85,6 +103,10 @@ Files: kwset.c kwset.h
 Copyright: © 1989, 1998, 2000, 2005, Free Software Foundation, Inc.
 License: GPL-2+
 
+Files: khash.h
+Copyright: © 2008, 2009, 2011 by Attractive Chaos <attractor@live.co.uk>
+License: Expat
+
 Files: trace.c
 Copyright: © 2000-2002, Michael R. Elkins <me@mutt.org>
            © 2002-2004, Oswald Buddenhagen <ossi@users.sf.net>
@@ -102,16 +124,11 @@ Files: t/test-lib.sh
 Copyright: © 2005, Junio C Hamano
 License: GPL-2+
 
-Files: compat/fnmatch/*
-Copyright: © 1991-1999, Free Software Foundation, Inc.
-License: LGPL-2+
-Comment: This file is part of the GNU C Library.
-
 Files: compat/inet_ntop.c compat/inet_pton.c
 Copyright: © 1996-2001, Internet Software Consortium.
 License: ISC
 
-Files: compat/win32/poll.c compat/win32/poll.h
+Files: compat/poll/poll.c compat/poll/poll.h
 Copyright: © 2001-2003, 2006-2011, Free Software Foundation, Inc.
 Name: Emulation for poll(2) from gnulib.
 License: GPL-2+
@@ -133,33 +150,41 @@ Copyright: © 1985, 1989-93, 1995-2010, Free Software Foundation, Inc.
 Name: Extended regular expression matching and search library
 License: LGPL-2.1+
 
-Files: compat/strtok_r.c
-Copyright: © 1991, 1996-1999, 2001, 2004, Free Software Foundation, Inc.
-Name: Reentrant string tokenizer.  Generic version.
-License: LGPL-2.1+
-
 Files: compat/obstack.c compat/obstack.h
 Copyright: © 1988-1994, 1996-2005, 2009, Free Software Foundation, Inc.
 Name: Object stack macros.
 License: LGPL-2.1+
 
-Files: contrib/fast-import/git-p4
-Copyright: © 2007, Simon Hausmann <simon@lst.de>
-           © 2007, Trolltech ASA
-License: Expat
+Files: contrib/persistent-https/*
+Copyright: © 2012, Google Inc.
+License: Apache-2.0
+
+Files: contrib/credential/gnome-keyring/git-credential-gnome-keyring.c
+Copyright: © 2011, John Szakmeister <john@szakmeister.net>
+           © 2012, Philipp A. Hartmann <pah@qo.cx>
+License: GPL-2+
 
 Files: contrib/hg-to-git/hg-to-git.py
 Copyright: © 2007, Stelian Pop <stelian@popies.net>
 Name: hg-to-git.py - A Mercurial to GIT converter
 License: GPL-2+
 
-Files: contrib/mw-to-git/git-remote-mediawiki
+Files: contrib/mw-to-git/git-*.perl contrib/mw-to-git/t/t*
 Copyright: © 2011
 		Jérémie Nikaes <jeremie.nikaes@ensimag.imag.fr>
 		Arnaud Lacurie <arnaud.lacurie@ensimag.imag.fr>
 		Claire Fousse <claire.fousse@ensimag.imag.fr>
 		David Amouyal <david.amouyal@ensimag.imag.fr>
 		Matthieu Moy <matthieu.moy@grenoble-inp.fr>
+           © 2012
+		Charles Roussel <charles.roussel@ensimag.imag.fr>
+		Simon Cathebras <simon.cathebras@ensimag.imag.fr>
+		Julien Khayat <julien.khayat@ensimag.imag.fr>
+		Guillaume Sasdy <guillaume.sasdy@ensimag.imag.fr>
+		Simon Perrat <simon.perrat@ensimag.imag.fr>
+	   © 2013
+		Benoit Person <benoit.person@ensimag.imag.fr>
+		Celestin Matte <celestin.matte@ensimag.imag.fr>
 License: GPL-2+
 
 Files: debian/*
@@ -222,6 +247,22 @@ License: LGPL-2.1+
  .
  On Debian systems, the complete text of the GNU Lesser General Public License
  can be found in /usr/share/common-licenses/LGPL-2.1.
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+ .
+     http://www.apache.org/licenses/LICENSE-2.0
+ .
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ .
+ On Debian systems, the full text of the Apache License version 2 can
+ be found in /usr/share/common-licenses/Apache-2.0.
 
 License: BSD-2-clause
  Redistribution and use in source and binary forms, with or without

@@ -70,7 +70,7 @@ static void format_write(int fd, const char *fmt, ...)
 	if (n >= sizeof(buffer))
 		die("protocol error: impossibly long line");
 
-	safe_write(fd, buffer, n);
+	write_or_die(fd, buffer, n);
 }
 
 static void http_status(unsigned code, const char *msg)
@@ -111,7 +111,7 @@ static void hdr_cache_forever(void)
 
 static void end_headers(void)
 {
-	safe_write(1, "\r\n", 2);
+	write_or_die(1, "\r\n", 2);
 }
 
 __attribute__((format (printf, 1, 2)))
@@ -157,7 +157,7 @@ static void send_strbuf(const char *type, struct strbuf *buf)
 	hdr_int(content_length, buf->len);
 	hdr_str(content_type, type);
 	end_headers();
-	safe_write(1, buf->buf, buf->len);
+	write_or_die(1, buf->buf, buf->len);
 }
 
 static void send_local_file(const char *the_type, const char *name)
@@ -185,7 +185,7 @@ static void send_local_file(const char *the_type, const char *name)
 			die_errno("Cannot read '%s'", p);
 		if (!n)
 			break;
-		safe_write(1, buf, n);
+		write_or_die(1, buf, n);
 	}
 	close(fd);
 	free(buf);
@@ -221,17 +221,19 @@ static void get_idx_file(char *name)
 
 static int http_config(const char *var, const char *value, void *cb)
 {
+	const char *p;
+
 	if (!strcmp(var, "http.getanyfile")) {
 		getanyfile = git_config_bool(var, value);
 		return 0;
 	}
 
-	if (!prefixcmp(var, "http.")) {
+	if (skip_prefix(var, "http.", &p)) {
 		int i;
 
 		for (i = 0; i < ARRAY_SIZE(rpc_service); i++) {
 			struct rpc_service *svc = &rpc_service[i];
-			if (!strcmp(var + 5, svc->config_name)) {
+			if (!strcmp(p, svc->config_name)) {
 				svc->enabled = git_config_bool(var, value);
 				return 0;
 			}
@@ -244,15 +246,16 @@ static int http_config(const char *var, const char *value, void *cb)
 
 static struct rpc_service *select_service(const char *name)
 {
+	const char *svc_name;
 	struct rpc_service *svc = NULL;
 	int i;
 
-	if (prefixcmp(name, "git-"))
+	if (!skip_prefix(name, "git-", &svc_name))
 		forbidden("Unsupported service: '%s'", name);
 
 	for (i = 0; i < ARRAY_SIZE(rpc_service); i++) {
 		struct rpc_service *s = &rpc_service[i];
-		if (!strcmp(s->name, name + 4)) {
+		if (!strcmp(s->name, svc_name)) {
 			svc = s;
 			break;
 		}
@@ -361,17 +364,19 @@ static void run_service(const char **argv)
 static int show_text_ref(const char *name, const unsigned char *sha1,
 	int flag, void *cb_data)
 {
+	const char *name_nons = strip_namespace(name);
 	struct strbuf *buf = cb_data;
 	struct object *o = parse_object(sha1);
 	if (!o)
 		return 0;
 
-	strbuf_addf(buf, "%s\t%s\n", sha1_to_hex(sha1), name);
+	strbuf_addf(buf, "%s\t%s\n", sha1_to_hex(sha1), name_nons);
 	if (o->type == OBJ_TAG) {
 		o = deref_tag(o, name, 0);
 		if (!o)
 			return 0;
-		strbuf_addf(buf, "%s\t%s^{}\n", sha1_to_hex(o->sha1), name);
+		strbuf_addf(buf, "%s\t%s^{}\n", sha1_to_hex(o->sha1),
+			    name_nons);
 	}
 	return 0;
 }
@@ -402,9 +407,37 @@ static void get_info_refs(char *arg)
 
 	} else {
 		select_getanyfile();
-		for_each_ref(show_text_ref, &buf);
+		for_each_namespaced_ref(show_text_ref, &buf);
 		send_strbuf("text/plain", &buf);
 	}
+	strbuf_release(&buf);
+}
+
+static int show_head_ref(const char *refname, const unsigned char *sha1,
+	int flag, void *cb_data)
+{
+	struct strbuf *buf = cb_data;
+
+	if (flag & REF_ISSYMREF) {
+		unsigned char unused[20];
+		const char *target = resolve_ref_unsafe(refname, unused, 1, NULL);
+		const char *target_nons = strip_namespace(target);
+
+		strbuf_addf(buf, "ref: %s\n", target_nons);
+	} else {
+		strbuf_addf(buf, "%s\n", sha1_to_hex(sha1));
+	}
+
+	return 0;
+}
+
+static void get_head(char *arg)
+{
+	struct strbuf buf = STRBUF_INIT;
+
+	select_getanyfile();
+	head_ref_namespaced(show_head_ref, &buf);
+	send_strbuf("text/plain", &buf);
 	strbuf_release(&buf);
 }
 
@@ -520,7 +553,7 @@ static struct service_cmd {
 	const char *pattern;
 	void (*imp)(char *);
 } services[] = {
-	{"GET", "/HEAD$", get_text_file},
+	{"GET", "/HEAD$", get_head},
 	{"GET", "/info/refs$", get_info_refs},
 	{"GET", "/objects/info/alternates$", get_text_file},
 	{"GET", "/objects/info/http-alternates$", get_text_file},
@@ -564,9 +597,11 @@ int main(int argc, char **argv)
 
 			if (strcmp(method, c->method)) {
 				const char *proto = getenv("SERVER_PROTOCOL");
-				if (proto && !strcmp(proto, "HTTP/1.1"))
+				if (proto && !strcmp(proto, "HTTP/1.1")) {
 					http_status(405, "Method Not Allowed");
-				else
+					hdr_str("Allow", !strcmp(c->method, "GET") ?
+						"GET, HEAD" : c->method);
+				} else
 					http_status(400, "Bad Request");
 				hdr_nocache();
 				end_headers();
@@ -575,9 +610,7 @@ int main(int argc, char **argv)
 
 			cmd = c;
 			n = out[0].rm_eo - out[0].rm_so;
-			cmd_arg = xmalloc(n);
-			memcpy(cmd_arg, dir + out[0].rm_so + 1, n-1);
-			cmd_arg[n-1] = '\0';
+			cmd_arg = xmemdupz(dir + out[0].rm_so + 1, n - 1);
 			dir[out[0].rm_so] = 0;
 			break;
 		}

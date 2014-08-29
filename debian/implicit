@@ -5,21 +5,17 @@ deb-checkdir:
 deb-checkuid:
 	@test "`id -u`" -eq 0 || sh -cx '! : need root privileges'
 
-%.deb: %.deb-docs %.deb-lintian %.deb-doc-base %.deb-DEBIAN
-	@rm -f $*.deb $*.deb-checkdir $*.deb-docs $*.deb-docs-base \
-	  $*.deb-docs-docs $*.deb-docs-examples \
-	  $*.deb-lintian $*.deb-doc-base $*.deb-DEBIAN \
-	  $*.deb-DEBIAN-dir $*.deb-DEBIAN-scripts $*.deb-DEBIAN-md5sums
+%.deb: %.deb-share %.deb-DEBIAN
+	: $*.deb ok
 
 %.udeb: %.deb-DEBIAN
-	@rm -f $*.deb $*.deb-checkdir $*.deb-DEBIAN $*.deb-DEBIAN-dir \
-	  $*.deb-DEBIAN-scripts $*.deb-DEBIAN-md5sums
+	: $*.udeb ok
 
-%.deb-checkdir: install
+%.deb-checkdir: %.install
 	@test -d debian/$* || sh -cx '! : directory debian/$* missing'
 	@test "`id -u`" -eq 0 || sh -cx '! : need root privileges'
 
-%.deb-docs-base: install
+%.deb-docs-base: %.install
 	: implicit
 	@rm -f debian/$*/usr/share/doc/$*/* || :
 	@install -d -m0755 debian/$*/usr/share/doc/$*
@@ -29,6 +25,9 @@ deb-checkuid:
 	  debian/$*/usr/share/doc/$*/changelog.Debian'
 	@test ! -r changelog || \
 	  sh -cx 'install -m0644 changelog debian/$*/usr/share/doc/$*/'
+	@test ! -r debian/changelog.upstream || \
+	  sh -cx "install -m0644 debian/changelog.upstream \
+	    debian/$*/usr/share/doc/$*/changelog"
 	@test -r debian/$*/usr/share/doc/$*/changelog || \
 	  sh -cx 'mv debian/$*/usr/share/doc/$*/changelog.Debian \
 	    debian/$*/usr/share/doc/$*/changelog'
@@ -83,8 +82,10 @@ deb-checkuid:
 	  sh -cx "install -m0644 $$i \
 	    debian/$*/usr/share/doc-base/$${i#debian/$*.doc-base.}" || exit 1; \
 	done
+%.deb-share: %.deb-docs %.deb-lintian %.deb-doc-base
+	: debian/$*/usr/share/doc,doc-base,lintian ok
 
-%.deb-DEBIAN-base: install
+%.deb-DEBIAN-base: %.install
 	@rm -rf debian/$*/DEBIAN
 	: debian/$*/DEBIAN/
 	@install -d -m0755 debian/$*/DEBIAN
@@ -99,7 +100,7 @@ deb-checkuid:
 	    sh -cx "install -m0755 debian/$*.$$i debian/$*/DEBIAN/$$i" \
 	      || exit 1; \
 	done
-%.deb-DEBIAN-md5sums: %.deb-DEBIAN-base
+%.deb-DEBIAN-md5sums: %.deb-DEBIAN-base %.deb-share
 	: debian/$*/DEBIAN/md5sums
 	@rm -f debian/$*/DEBIAN/md5sums
 	@cd debian/$* && find * -path 'DEBIAN' -prune -o \

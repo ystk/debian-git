@@ -10,21 +10,69 @@
 #include "strbuf.h"
 #include "quote.h"
 
-#define MAXNAME (256)
-
-typedef struct config_file {
-	struct config_file *prev;
-	FILE *f;
+struct config_source {
+	struct config_source *prev;
+	union {
+		FILE *file;
+		struct config_buf {
+			const char *buf;
+			size_t len;
+			size_t pos;
+		} buf;
+	} u;
 	const char *name;
+	const char *path;
+	int die_on_error;
 	int linenr;
 	int eof;
 	struct strbuf value;
-	char var[MAXNAME];
-} config_file;
+	struct strbuf var;
 
-static config_file *cf;
+	int (*do_fgetc)(struct config_source *c);
+	int (*do_ungetc)(int c, struct config_source *conf);
+	long (*do_ftell)(struct config_source *c);
+};
+
+static struct config_source *cf;
 
 static int zlib_compression_seen;
+
+static int config_file_fgetc(struct config_source *conf)
+{
+	return fgetc(conf->u.file);
+}
+
+static int config_file_ungetc(int c, struct config_source *conf)
+{
+	return ungetc(c, conf->u.file);
+}
+
+static long config_file_ftell(struct config_source *conf)
+{
+	return ftell(conf->u.file);
+}
+
+
+static int config_buf_fgetc(struct config_source *conf)
+{
+	if (conf->u.buf.pos < conf->u.buf.len)
+		return conf->u.buf.buf[conf->u.buf.pos++];
+
+	return EOF;
+}
+
+static int config_buf_ungetc(int c, struct config_source *conf)
+{
+	if (conf->u.buf.pos > 0)
+		return conf->u.buf.buf[--conf->u.buf.pos];
+
+	return EOF;
+}
+
+static long config_buf_ftell(struct config_source *conf)
+{
+	return conf->u.buf.pos;
+}
 
 #define MAX_INCLUDE_DEPTH 10
 static const char include_depth_advice[] =
@@ -37,8 +85,12 @@ static int handle_path_include(const char *path, struct config_include_data *inc
 {
 	int ret = 0;
 	struct strbuf buf = STRBUF_INIT;
-	char *expanded = expand_user_path(path);
+	char *expanded;
 
+	if (!path)
+		return config_error_nonbool("include.path");
+
+	expanded = expand_user_path(path);
 	if (!expanded)
 		return error("Could not expand include path '%s'", path);
 	path = expanded;
@@ -50,17 +102,17 @@ static int handle_path_include(const char *path, struct config_include_data *inc
 	if (!is_absolute_path(path)) {
 		char *slash;
 
-		if (!cf || !cf->name)
+		if (!cf || !cf->path)
 			return error("relative config includes must come from files");
 
-		slash = find_last_dir_sep(cf->name);
+		slash = find_last_dir_sep(cf->path);
 		if (slash)
-			strbuf_add(&buf, cf->name, slash - cf->name + 1);
+			strbuf_add(&buf, cf->path, slash - cf->path + 1);
 		strbuf_addstr(&buf, path);
 		path = buf.buf;
 	}
 
-	if (!access(path, R_OK)) {
+	if (!access_or_die(path, R_OK, 0)) {
 		if (++inc->depth > MAX_INCLUDE_DEPTH)
 			die(include_depth_advice, MAX_INCLUDE_DEPTH, path,
 			    cf && cf->name ? cf->name : "the command line");
@@ -86,19 +138,12 @@ int git_config_include(const char *var, const char *value, void *data)
 	if (ret < 0)
 		return ret;
 
-	type = skip_prefix(var, "include.");
-	if (!type)
+	if (!skip_prefix(var, "include.", &type))
 		return ret;
 
 	if (!strcmp(type, "path"))
 		ret = handle_path_include(value, inc);
 	return ret;
-}
-
-static void lowercase(char *p)
-{
-	for (; *p; p++)
-		*p = tolower(*p);
 }
 
 void git_config_push_parameter(const char *text)
@@ -128,7 +173,7 @@ int git_config_parse_parameter(const char *text,
 		strbuf_list_free(pair);
 		return error("bogus config parameter: %s", text);
 	}
-	lowercase(pair[0]->buf);
+	strbuf_tolower(pair[0]);
 	if (fn(pair[0]->buf, pair[1] ? pair[1]->buf : NULL, data) < 0) {
 		strbuf_list_free(pair);
 		return -1;
@@ -170,26 +215,21 @@ int git_config_from_parameters(config_fn_t fn, void *data)
 
 static int get_next_char(void)
 {
-	int c;
-	FILE *f;
+	int c = cf->do_fgetc(cf);
 
-	c = '\n';
-	if (cf && ((f = cf->f) != NULL)) {
-		c = fgetc(f);
-		if (c == '\r') {
-			/* DOS like systems */
-			c = fgetc(f);
-			if (c != '\n') {
-				ungetc(c, f);
-				c = '\r';
-			}
+	if (c == '\r') {
+		/* DOS like systems */
+		c = cf->do_fgetc(cf);
+		if (c != '\n') {
+			cf->do_ungetc(c, cf);
+			c = '\r';
 		}
-		if (c == '\n')
-			cf->linenr++;
-		if (c == EOF) {
-			cf->eof = 1;
-			c = '\n';
-		}
+	}
+	if (c == '\n')
+		cf->linenr++;
+	if (c == EOF) {
+		cf->eof = 1;
+		c = '\n';
 	}
 	return c;
 }
@@ -260,7 +300,7 @@ static inline int iskeychar(int c)
 	return isalnum(c) || c == '-';
 }
 
-static int get_value(config_fn_t fn, void *data, char *name, unsigned int len)
+static int get_value(config_fn_t fn, void *data, struct strbuf *name)
 {
 	int c;
 	char *value;
@@ -272,11 +312,9 @@ static int get_value(config_fn_t fn, void *data, char *name, unsigned int len)
 			break;
 		if (!iskeychar(c))
 			break;
-		name[len++] = tolower(c);
-		if (len >= MAXNAME)
-			return -1;
+		strbuf_addch(name, tolower(c));
 	}
-	name[len] = 0;
+
 	while (c == ' ' || c == '\t')
 		c = get_next_char();
 
@@ -288,10 +326,10 @@ static int get_value(config_fn_t fn, void *data, char *name, unsigned int len)
 		if (!value)
 			return -1;
 	}
-	return fn(name, value, data);
+	return fn(name->buf, value, data);
 }
 
-static int get_extended_base_var(char *name, int baselen, int c)
+static int get_extended_base_var(struct strbuf *name, int c)
 {
 	do {
 		if (c == '\n')
@@ -302,7 +340,7 @@ static int get_extended_base_var(char *name, int baselen, int c)
 	/* We require the format to be '[base "extension"]' */
 	if (c != '"')
 		return -1;
-	name[baselen++] = '.';
+	strbuf_addch(name, '.');
 
 	for (;;) {
 		int c = get_next_char();
@@ -315,45 +353,39 @@ static int get_extended_base_var(char *name, int baselen, int c)
 			if (c == '\n')
 				goto error_incomplete_line;
 		}
-		name[baselen++] = c;
-		if (baselen > MAXNAME / 2)
-			return -1;
+		strbuf_addch(name, c);
 	}
 
 	/* Final ']' */
 	if (get_next_char() != ']')
 		return -1;
-	return baselen;
+	return 0;
 error_incomplete_line:
 	cf->linenr--;
 	return -1;
 }
 
-static int get_base_var(char *name)
+static int get_base_var(struct strbuf *name)
 {
-	int baselen = 0;
-
 	for (;;) {
 		int c = get_next_char();
 		if (cf->eof)
 			return -1;
 		if (c == ']')
-			return baselen;
+			return 0;
 		if (isspace(c))
-			return get_extended_base_var(name, baselen, c);
+			return get_extended_base_var(name, c);
 		if (!iskeychar(c) && c != '.')
 			return -1;
-		if (baselen > MAXNAME / 2)
-			return -1;
-		name[baselen++] = tolower(c);
+		strbuf_addch(name, tolower(c));
 	}
 }
 
-static int git_parse_file(config_fn_t fn, void *data)
+static int git_parse_source(config_fn_t fn, void *data)
 {
 	int comment = 0;
 	int baselen = 0;
-	char *var = cf->var;
+	struct strbuf *var = &cf->var;
 
 	/* U+FEFF Byte Order Mark in UTF8 */
 	static const unsigned char *utf8_bom = (unsigned char *) "\xef\xbb\xbf";
@@ -389,20 +421,30 @@ static int git_parse_file(config_fn_t fn, void *data)
 			continue;
 		}
 		if (c == '[') {
-			baselen = get_base_var(var);
-			if (baselen <= 0)
+			/* Reset prior to determining a new stem */
+			strbuf_reset(var);
+			if (get_base_var(var) < 0 || var->len < 1)
 				break;
-			var[baselen++] = '.';
-			var[baselen] = 0;
+			strbuf_addch(var, '.');
+			baselen = var->len;
 			continue;
 		}
 		if (!isalpha(c))
 			break;
-		var[baselen] = tolower(c);
-		if (get_value(fn, data, var, baselen+1) < 0)
+		/*
+		 * Truncate the var name back to the section header
+		 * stem prior to grabbing the suffix part of the name
+		 * and the value.
+		 */
+		strbuf_setlen(var, baselen);
+		strbuf_addch(var, tolower(c));
+		if (get_value(fn, data, var) < 0)
 			break;
 	}
-	die("bad config file line %d in %s", cf->linenr, cf->name);
+	if (cf->die_on_error)
+		die("bad config file line %d in %s", cf->linenr, cf->name);
+	else
+		return error("bad config file line %d in %s", cf->linenr, cf->name);
 }
 
 static int parse_unit_factor(const char *end, uintmax_t *val)
@@ -424,7 +466,7 @@ static int parse_unit_factor(const char *end, uintmax_t *val)
 	return 0;
 }
 
-static int git_parse_long(const char *value, long *ret)
+static int git_parse_signed(const char *value, intmax_t *ret, intmax_t max)
 {
 	if (value && *value) {
 		char *end;
@@ -436,21 +478,25 @@ static int git_parse_long(const char *value, long *ret)
 		val = strtoimax(value, &end, 0);
 		if (errno == ERANGE)
 			return 0;
-		if (!parse_unit_factor(end, &factor))
+		if (!parse_unit_factor(end, &factor)) {
+			errno = EINVAL;
 			return 0;
+		}
 		uval = abs(val);
 		uval *= factor;
-		if ((uval > maximum_signed_value_of_type(long)) ||
-		    (abs(val) > uval))
+		if (uval > max || abs(val) > uval) {
+			errno = ERANGE;
 			return 0;
+		}
 		val *= factor;
 		*ret = val;
 		return 1;
 	}
+	errno = EINVAL;
 	return 0;
 }
 
-int git_parse_ulong(const char *value, unsigned long *ret)
+static int git_parse_unsigned(const char *value, uintmax_t *ret, uintmax_t max)
 {
 	if (value && *value) {
 		char *end;
@@ -462,29 +508,76 @@ int git_parse_ulong(const char *value, unsigned long *ret)
 		if (errno == ERANGE)
 			return 0;
 		oldval = val;
-		if (!parse_unit_factor(end, &val))
+		if (!parse_unit_factor(end, &val)) {
+			errno = EINVAL;
 			return 0;
-		if ((val > maximum_unsigned_value_of_type(long)) ||
-		    (oldval > val))
+		}
+		if (val > max || oldval > val) {
+			errno = ERANGE;
 			return 0;
+		}
 		*ret = val;
 		return 1;
 	}
+	errno = EINVAL;
 	return 0;
 }
 
-static void die_bad_config(const char *name)
+static int git_parse_int(const char *value, int *ret)
 {
+	intmax_t tmp;
+	if (!git_parse_signed(value, &tmp, maximum_signed_value_of_type(int)))
+		return 0;
+	*ret = tmp;
+	return 1;
+}
+
+static int git_parse_int64(const char *value, int64_t *ret)
+{
+	intmax_t tmp;
+	if (!git_parse_signed(value, &tmp, maximum_signed_value_of_type(int64_t)))
+		return 0;
+	*ret = tmp;
+	return 1;
+}
+
+int git_parse_ulong(const char *value, unsigned long *ret)
+{
+	uintmax_t tmp;
+	if (!git_parse_unsigned(value, &tmp, maximum_unsigned_value_of_type(long)))
+		return 0;
+	*ret = tmp;
+	return 1;
+}
+
+NORETURN
+static void die_bad_number(const char *name, const char *value)
+{
+	const char *reason = errno == ERANGE ?
+			     "out of range" :
+			     "invalid unit";
+	if (!value)
+		value = "";
+
 	if (cf && cf->name)
-		die("bad config value for '%s' in %s", name, cf->name);
-	die("bad config value for '%s'", name);
+		die("bad numeric config value '%s' for '%s' in %s: %s",
+		    value, name, cf->name, reason);
+	die("bad numeric config value '%s' for '%s': %s", value, name, reason);
 }
 
 int git_config_int(const char *name, const char *value)
 {
-	long ret = 0;
-	if (!git_parse_long(value, &ret))
-		die_bad_config(name);
+	int ret;
+	if (!git_parse_int(value, &ret))
+		die_bad_number(name, value);
+	return ret;
+}
+
+int64_t git_config_int64(const char *name, const char *value)
+{
+	int64_t ret;
+	if (!git_parse_int64(value, &ret))
+		die_bad_number(name, value);
 	return ret;
 }
 
@@ -492,7 +585,7 @@ unsigned long git_config_ulong(const char *name, const char *value)
 {
 	unsigned long ret;
 	if (!git_parse_ulong(value, &ret))
-		die_bad_config(name);
+		die_bad_number(name, value);
 	return ret;
 }
 
@@ -515,10 +608,10 @@ static int git_config_maybe_bool_text(const char *name, const char *value)
 
 int git_config_maybe_bool(const char *name, const char *value)
 {
-	long v = git_config_maybe_bool_text(name, value);
+	int v = git_config_maybe_bool_text(name, value);
 	if (0 <= v)
 		return v;
-	if (git_parse_long(value, &v))
+	if (git_parse_int(value, &v))
 		return !!v;
 	return -1;
 }
@@ -568,6 +661,12 @@ static int git_default_core_config(const char *var, const char *value)
 	if (!strcmp(var, "core.trustctime")) {
 		trust_ctime = git_config_bool(var, value);
 		return 0;
+	}
+	if (!strcmp(var, "core.checkstat")) {
+		if (!strcasecmp(value, "default"))
+			check_stat = 1;
+		else if (!strcasecmp(value, "minimal"))
+			check_stat = 0;
 	}
 
 	if (!strcmp(var, "core.quotepath")) {
@@ -672,9 +771,6 @@ static int git_default_core_config(const char *var, const char *value)
 		return 0;
 	}
 
-	if (!strcmp(var, "core.logpackaccess"))
-		return git_config_string(&log_pack_access, var, value);
-
 	if (!strcmp(var, "core.autocrlf")) {
 		if (value && !strcasecmp(value, "input")) {
 			if (core_eol == EOL_CRLF)
@@ -720,6 +816,19 @@ static int git_default_core_config(const char *var, const char *value)
 	if (!strcmp(var, "core.editor"))
 		return git_config_string(&editor_program, var, value);
 
+	if (!strcmp(var, "core.commentchar")) {
+		if (!value)
+			return config_error_nonbool(var);
+		else if (!strcasecmp(value, "auto"))
+			auto_comment_line_char = 1;
+		else if (value[0] && !value[1]) {
+			comment_line_char = value[0];
+			auto_comment_line_char = 0;
+		} else
+			return error("core.commentChar should only be one character");
+		return 0;
+	}
+
 	if (!strcmp(var, "core.askpass"))
 		return git_config_string(&askpass_program, var, value);
 
@@ -758,25 +867,8 @@ static int git_default_core_config(const char *var, const char *value)
 		return 0;
 	}
 
-	/* Add other config variables here and to Documentation/config.txt. */
-	return 0;
-}
-
-static int git_default_user_config(const char *var, const char *value)
-{
-	if (!strcmp(var, "user.name")) {
-		if (!value)
-			return config_error_nonbool(var);
-		strlcpy(git_default_name, value, sizeof(git_default_name));
-		user_ident_explicitly_given |= IDENT_NAME_GIVEN;
-		return 0;
-	}
-
-	if (!strcmp(var, "user.email")) {
-		if (!value)
-			return config_error_nonbool(var);
-		strlcpy(git_default_email, value, sizeof(git_default_email));
-		user_ident_explicitly_given |= IDENT_MAIL_GIVEN;
+	if (!strcmp(var, "core.precomposeunicode")) {
+		precomposed_unicode = git_config_bool(var, value);
 		return 0;
 	}
 
@@ -835,6 +927,8 @@ static int git_default_push_config(const char *var, const char *value)
 			push_default = PUSH_DEFAULT_NOTHING;
 		else if (!strcmp(value, "matching"))
 			push_default = PUSH_DEFAULT_MATCHING;
+		else if (!strcmp(value, "simple"))
+			push_default = PUSH_DEFAULT_SIMPLE;
 		else if (!strcmp(value, "upstream"))
 			push_default = PUSH_DEFAULT_UPSTREAM;
 		else if (!strcmp(value, "tracking")) /* deprecated */
@@ -843,8 +937,8 @@ static int git_default_push_config(const char *var, const char *value)
 			push_default = PUSH_DEFAULT_CURRENT;
 		else {
 			error("Malformed value for %s: %s", var, value);
-			return error("Must be one of nothing, matching, "
-				     "tracking or current.");
+			return error("Must be one of nothing, matching, simple, "
+				     "upstream or current.");
 		}
 		return 0;
 	}
@@ -856,7 +950,9 @@ static int git_default_push_config(const char *var, const char *value)
 static int git_default_mailmap_config(const char *var, const char *value)
 {
 	if (!strcmp(var, "mailmap.file"))
-		return git_config_string(&git_mailmap_file, var, value);
+		return git_config_pathname(&git_mailmap_file, var, value);
+	if (!strcmp(var, "mailmap.blob"))
+		return git_config_string(&git_mailmap_blob, var, value);
 
 	/* Add other config variables here and to Documentation/config.txt. */
 	return 0;
@@ -864,25 +960,25 @@ static int git_default_mailmap_config(const char *var, const char *value)
 
 int git_default_config(const char *var, const char *value, void *dummy)
 {
-	if (!prefixcmp(var, "core."))
+	if (starts_with(var, "core."))
 		return git_default_core_config(var, value);
 
-	if (!prefixcmp(var, "user."))
-		return git_default_user_config(var, value);
+	if (starts_with(var, "user."))
+		return git_ident_config(var, value, dummy);
 
-	if (!prefixcmp(var, "i18n."))
+	if (starts_with(var, "i18n."))
 		return git_default_i18n_config(var, value);
 
-	if (!prefixcmp(var, "branch."))
+	if (starts_with(var, "branch."))
 		return git_default_branch_config(var, value);
 
-	if (!prefixcmp(var, "push."))
+	if (starts_with(var, "push."))
 		return git_default_push_config(var, value);
 
-	if (!prefixcmp(var, "mailmap."))
+	if (starts_with(var, "mailmap."))
 		return git_default_mailmap_config(var, value);
 
-	if (!prefixcmp(var, "advice."))
+	if (starts_with(var, "advice."))
 		return git_default_advice_config(var, value);
 
 	if (!strcmp(var, "pager.color") || !strcmp(var, "color.pager")) {
@@ -898,33 +994,118 @@ int git_default_config(const char *var, const char *value, void *dummy)
 	return 0;
 }
 
-int git_config_from_file(config_fn_t fn, const char *filename, void *data)
+/*
+ * All source specific fields in the union, die_on_error, name and the callbacks
+ * fgetc, ungetc, ftell of top need to be initialized before calling
+ * this function.
+ */
+static int do_config_from(struct config_source *top, config_fn_t fn, void *data)
 {
 	int ret;
-	FILE *f = fopen(filename, "r");
 
-	ret = -1;
+	/* push config-file parsing state stack */
+	top->prev = cf;
+	top->linenr = 1;
+	top->eof = 0;
+	strbuf_init(&top->value, 1024);
+	strbuf_init(&top->var, 1024);
+	cf = top;
+
+	ret = git_parse_source(fn, data);
+
+	/* pop config-file parsing state stack */
+	strbuf_release(&top->value);
+	strbuf_release(&top->var);
+	cf = top->prev;
+
+	return ret;
+}
+
+static int do_config_from_file(config_fn_t fn,
+		const char *name, const char *path, FILE *f, void *data)
+{
+	struct config_source top;
+
+	top.u.file = f;
+	top.name = name;
+	top.path = path;
+	top.die_on_error = 1;
+	top.do_fgetc = config_file_fgetc;
+	top.do_ungetc = config_file_ungetc;
+	top.do_ftell = config_file_ftell;
+
+	return do_config_from(&top, fn, data);
+}
+
+static int git_config_from_stdin(config_fn_t fn, void *data)
+{
+	return do_config_from_file(fn, "<stdin>", NULL, stdin, data);
+}
+
+int git_config_from_file(config_fn_t fn, const char *filename, void *data)
+{
+	int ret = -1;
+	FILE *f;
+
+	f = fopen(filename, "r");
 	if (f) {
-		config_file top;
-
-		/* push config-file parsing state stack */
-		top.prev = cf;
-		top.f = f;
-		top.name = filename;
-		top.linenr = 1;
-		top.eof = 0;
-		strbuf_init(&top.value, 1024);
-		cf = &top;
-
-		ret = git_parse_file(fn, data);
-
-		/* pop config-file parsing state stack */
-		strbuf_release(&top.value);
-		cf = top.prev;
-
+		ret = do_config_from_file(fn, filename, filename, f, data);
 		fclose(f);
 	}
 	return ret;
+}
+
+int git_config_from_buf(config_fn_t fn, const char *name, const char *buf,
+			size_t len, void *data)
+{
+	struct config_source top;
+
+	top.u.buf.buf = buf;
+	top.u.buf.len = len;
+	top.u.buf.pos = 0;
+	top.name = name;
+	top.path = NULL;
+	top.die_on_error = 0;
+	top.do_fgetc = config_buf_fgetc;
+	top.do_ungetc = config_buf_ungetc;
+	top.do_ftell = config_buf_ftell;
+
+	return do_config_from(&top, fn, data);
+}
+
+static int git_config_from_blob_sha1(config_fn_t fn,
+				     const char *name,
+				     const unsigned char *sha1,
+				     void *data)
+{
+	enum object_type type;
+	char *buf;
+	unsigned long size;
+	int ret;
+
+	buf = read_sha1_file(sha1, &type, &size);
+	if (!buf)
+		return error("unable to load config blob object '%s'", name);
+	if (type != OBJ_BLOB) {
+		free(buf);
+		return error("reference '%s' does not point to a blob", name);
+	}
+
+	ret = git_config_from_buf(fn, name, buf, size, data);
+	free(buf);
+
+	return ret;
+}
+
+static int git_config_from_blob_ref(config_fn_t fn,
+				    const char *name,
+				    void *data)
+{
+	unsigned char sha1[20];
+
+	if (get_sha1(name, sha1) < 0)
+		return error("unable to resolve config blob '%s'", name);
+	return git_config_from_blob_sha1(fn, name, sha1, data);
 }
 
 const char *git_etc_gitconfig(void)
@@ -949,25 +1130,28 @@ int git_config_system(void)
 int git_config_early(config_fn_t fn, void *data, const char *repo_config)
 {
 	int ret = 0, found = 0;
-	const char *home = NULL;
+	char *xdg_config = NULL;
+	char *user_config = NULL;
 
-	if (git_config_system() && !access(git_etc_gitconfig(), R_OK)) {
+	home_config_paths(&user_config, &xdg_config, "config");
+
+	if (git_config_system() && !access_or_die(git_etc_gitconfig(), R_OK, 0)) {
 		ret += git_config_from_file(fn, git_etc_gitconfig(),
 					    data);
 		found += 1;
 	}
 
-	home = getenv("HOME");
-	if (home) {
-		char buf[PATH_MAX];
-		char *user_config = mksnpath(buf, sizeof(buf), "%s/.gitconfig", home);
-		if (!access(user_config, R_OK)) {
-			ret += git_config_from_file(fn, user_config, data);
-			found += 1;
-		}
+	if (xdg_config && !access_or_die(xdg_config, R_OK, ACCESS_EACCES_OK)) {
+		ret += git_config_from_file(fn, xdg_config, data);
+		found += 1;
 	}
 
-	if (repo_config && !access(repo_config, R_OK)) {
+	if (user_config && !access_or_die(user_config, R_OK, ACCESS_EACCES_OK)) {
+		ret += git_config_from_file(fn, user_config, data);
+		found += 1;
+	}
+
+	if (repo_config && !access_or_die(repo_config, R_OK, 0)) {
 		ret += git_config_from_file(fn, repo_config, data);
 		found += 1;
 	}
@@ -983,11 +1167,14 @@ int git_config_early(config_fn_t fn, void *data, const char *repo_config)
 		break;
 	}
 
+	free(xdg_config);
+	free(user_config);
 	return ret == 0 ? found : ret;
 }
 
 int git_config_with_options(config_fn_t fn, void *data,
-			    const char *filename, int respect_includes)
+			    struct git_config_source *config_source,
+			    int respect_includes)
 {
 	char *repo_config = NULL;
 	int ret;
@@ -1004,8 +1191,12 @@ int git_config_with_options(config_fn_t fn, void *data,
 	 * If we have a specific filename, use it. Otherwise, follow the
 	 * regular lookup sequence.
 	 */
-	if (filename)
-		return git_config_from_file(fn, filename, data);
+	if (config_source && config_source->use_stdin)
+		return git_config_from_stdin(fn, data);
+	else if (config_source && config_source->file)
+		return git_config_from_file(fn, config_source->file, data);
+	else if (config_source && config_source->blob)
+		return git_config_from_blob_ref(fn, config_source->blob, data);
 
 	repo_config = git_pathdup("config");
 	ret = git_config_early(fn, data, repo_config);
@@ -1023,15 +1214,14 @@ int git_config(config_fn_t fn, void *data)
  * Find all the stuff for git_config_set() below.
  */
 
-#define MAX_MATCHES 512
-
 static struct {
 	int baselen;
 	char *key;
 	int do_not_match;
 	regex_t *value_regex;
 	int multi_replace;
-	size_t offset[MAX_MATCHES];
+	size_t *offset;
+	unsigned int offset_alloc;
 	enum { START, SECTION_SEEN, SECTION_END_SEEN, KEY_SEEN } state;
 	int seen;
 } store;
@@ -1048,19 +1238,18 @@ static int store_aux(const char *key, const char *value, void *cb)
 {
 	const char *ep;
 	size_t section_len;
-	FILE *f = cf->f;
 
 	switch (store.state) {
 	case KEY_SEEN:
 		if (matches(key, value)) {
 			if (store.seen == 1 && store.multi_replace == 0) {
 				warning("%s has multiple values", key);
-			} else if (store.seen >= MAX_MATCHES) {
-				error("too many matches for %s", key);
-				return 1;
 			}
 
-			store.offset[store.seen] = ftell(f);
+			ALLOC_GROW(store.offset, store.seen + 1,
+				   store.offset_alloc);
+
+			store.offset[store.seen] = cf->do_ftell(cf);
 			store.seen++;
 		}
 		break;
@@ -1087,19 +1276,26 @@ static int store_aux(const char *key, const char *value, void *cb)
 		 * Do not increment matches: this is no match, but we
 		 * just made sure we are in the desired section.
 		 */
-		store.offset[store.seen] = ftell(f);
+		ALLOC_GROW(store.offset, store.seen + 1,
+			   store.offset_alloc);
+		store.offset[store.seen] = cf->do_ftell(cf);
 		/* fallthru */
 	case SECTION_END_SEEN:
 	case START:
 		if (matches(key, value)) {
-			store.offset[store.seen] = ftell(f);
+			ALLOC_GROW(store.offset, store.seen + 1,
+				   store.offset_alloc);
+			store.offset[store.seen] = cf->do_ftell(cf);
 			store.state = KEY_SEEN;
 			store.seen++;
 		} else {
 			if (strrchr(key, '.') - key == store.baselen &&
 			      !strncmp(key, store.key, store.baselen)) {
 					store.state = SECTION_SEEN;
-					store.offset[store.seen] = ftell(f);
+					ALLOC_GROW(store.offset,
+						   store.seen + 1,
+						   store.offset_alloc);
+					store.offset[store.seen] = cf->do_ftell(cf);
 			}
 		}
 	}
@@ -1290,6 +1486,7 @@ int git_config_parse_key(const char *key, char **store_key, int *baselen_)
 
 out_free_ret_1:
 	free(*store_key);
+	*store_key = NULL;
 	return -CONFIG_INVALID_KEY;
 }
 
@@ -1339,7 +1536,7 @@ int git_config_set_multivar_in_file(const char *config_filename,
 	 * The lock serves a purpose in addition to locking: the new
 	 * contents of .git/config will be written into it.
 	 */
-	lock = xcalloc(sizeof(struct lock_file), 1);
+	lock = xcalloc(1, sizeof(struct lock_file));
 	fd = hold_lock_file_for_update(lock, config_filename, 0);
 	if (fd < 0) {
 		error("could not lock config file %s: %s", config_filename, strerror(errno));
@@ -1396,6 +1593,7 @@ int git_config_set_multivar_in_file(const char *config_filename,
 			}
 		}
 
+		ALLOC_GROW(store.offset, 1, store.offset_alloc);
 		store.offset[0] = 0;
 		store.state = START;
 		store.seen = 0;
@@ -1435,6 +1633,13 @@ int git_config_set_multivar_in_file(const char *config_filename,
 		contents = xmmap(NULL, contents_sz, PROT_READ,
 			MAP_PRIVATE, in_fd, 0);
 		close(in_fd);
+
+		if (chmod(lock->filename, st.st_mode & 07777) < 0) {
+			error("chmod on %s failed: %s",
+				lock->filename, strerror(errno));
+			ret = CONFIG_NO_WRITE;
+			goto out_free;
+		}
 
 		if (store.seen == 0)
 			store.seen = 1;
@@ -1584,6 +1789,7 @@ int git_config_rename_section_in_file(const char *config_filename,
 	int out_fd;
 	char buf[1024];
 	FILE *config_file;
+	struct stat st;
 
 	if (new_name && !section_name_is_ok(new_name)) {
 		ret = error("invalid section name: %s", new_name);
@@ -1593,7 +1799,7 @@ int git_config_rename_section_in_file(const char *config_filename,
 	if (!config_filename)
 		config_filename = filename_buf = git_pathdup("config");
 
-	lock = xcalloc(sizeof(struct lock_file), 1);
+	lock = xcalloc(1, sizeof(struct lock_file));
 	out_fd = hold_lock_file_for_update(lock, config_filename, 0);
 	if (out_fd < 0) {
 		ret = error("could not lock config file %s", config_filename);
@@ -1603,6 +1809,14 @@ int git_config_rename_section_in_file(const char *config_filename,
 	if (!(config_file = fopen(config_filename, "rb"))) {
 		/* no config file means nothing to rename, no error */
 		goto unlock_and_out;
+	}
+
+	fstat(fileno(config_file), &st);
+
+	if (chmod(lock->filename, st.st_mode & 07777) < 0) {
+		ret = error("chmod on %s failed: %s",
+				lock->filename, strerror(errno));
+		goto out;
 	}
 
 	while (fgets(buf, sizeof(buf), config_file)) {
@@ -1670,7 +1884,41 @@ int git_config_rename_section(const char *old_name, const char *new_name)
  * Call this to report error for your variable that should not
  * get a boolean value (i.e. "[my] var" means "true").
  */
+#undef config_error_nonbool
 int config_error_nonbool(const char *var)
 {
 	return error("Missing value for '%s'", var);
+}
+
+int parse_config_key(const char *var,
+		     const char *section,
+		     const char **subsection, int *subsection_len,
+		     const char **key)
+{
+	int section_len = strlen(section);
+	const char *dot;
+
+	/* Does it start with "section." ? */
+	if (!starts_with(var, section) || var[section_len] != '.')
+		return -1;
+
+	/*
+	 * Find the key; we don't know yet if we have a subsection, but we must
+	 * parse backwards from the end, since the subsection may have dots in
+	 * it, too.
+	 */
+	dot = strrchr(var, '.');
+	*key = dot + 1;
+
+	/* Did we have a subsection at all? */
+	if (dot == var + section_len) {
+		*subsection = NULL;
+		*subsection_len = 0;
+	}
+	else {
+		*subsection = var + section_len + 1;
+		*subsection_len = dot - *subsection;
+	}
+
+	return 0;
 }

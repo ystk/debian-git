@@ -9,10 +9,6 @@
 #define HOST_NAME_MAX 256
 #endif
 
-#ifndef NI_MAXSERV
-#define NI_MAXSERV 32
-#endif
-
 #ifdef NO_INITGROUPS
 #define initgroups(x, y) (0) /* nothing */
 #endif
@@ -30,6 +26,7 @@ static const char daemon_usage[] =
 "           [--interpolated-path=<path>]\n"
 "           [--reuseaddr] [--pid-file=<file>]\n"
 "           [--(enable|disable|allow-override|forbid-override)=<service>]\n"
+"           [--access-hook=<path>]\n"
 "           [--inetd | [--listen=<host_or_ipaddr>] [--port=<n>]\n"
 "                      [--detach] [--user=<user> [--group=<group>]]\n"
 "           [<directory>...]";
@@ -42,8 +39,8 @@ static int strict_paths;
 static int export_all_trees;
 
 /* Take all paths relative to this one if non-NULL */
-static char *base_path;
-static char *interpolated_path;
+static const char *base_path;
+static const char *interpolated_path;
 static int base_path_relaxed;
 
 /* Flag indicating client sent extra args. */
@@ -109,12 +106,12 @@ static void NORETURN daemon_die(const char *err, va_list params)
 	exit(1);
 }
 
-static const char *path_ok(char *directory)
+static const char *path_ok(const char *directory)
 {
 	static char rpath[PATH_MAX];
 	static char interp_path[PATH_MAX];
 	const char *path;
-	char *dir;
+	const char *dir;
 
 	dir = directory;
 
@@ -134,7 +131,7 @@ static const char *path_ok(char *directory)
 			 * "~alice/%s/foo".
 			 */
 			int namlen, restlen = strlen(dir);
-			char *slash = strchr(dir, '/');
+			const char *slash = strchr(dir, '/');
 			if (!slash)
 				slash = dir + restlen;
 			namlen = slash - dir;
@@ -238,8 +235,10 @@ static int service_enabled;
 
 static int git_daemon_config(const char *var, const char *value, void *cb)
 {
-	if (!prefixcmp(var, "daemon.") &&
-	    !strcmp(var + 7, service_looking_at->config_name)) {
+	const char *service;
+
+	if (skip_prefix(var, "daemon.", &service) &&
+	    !strcmp(service, service_looking_at->config_name)) {
 		service_enabled = git_config_bool(var, value);
 		return 0;
 	}
@@ -256,7 +255,72 @@ static int daemon_error(const char *dir, const char *msg)
 	return -1;
 }
 
-static int run_service(char *dir, struct daemon_service *service)
+static const char *access_hook;
+
+static int run_access_hook(struct daemon_service *service, const char *dir, const char *path)
+{
+	struct child_process child;
+	struct strbuf buf = STRBUF_INIT;
+	const char *argv[8];
+	const char **arg = argv;
+	char *eol;
+	int seen_errors = 0;
+
+#define STRARG(x) ((x) ? (x) : "")
+	*arg++ = access_hook;
+	*arg++ = service->name;
+	*arg++ = path;
+	*arg++ = STRARG(hostname);
+	*arg++ = STRARG(canon_hostname);
+	*arg++ = STRARG(ip_address);
+	*arg++ = STRARG(tcp_port);
+	*arg = NULL;
+#undef STRARG
+
+	memset(&child, 0, sizeof(child));
+	child.use_shell = 1;
+	child.argv = argv;
+	child.no_stdin = 1;
+	child.no_stderr = 1;
+	child.out = -1;
+	if (start_command(&child)) {
+		logerror("daemon access hook '%s' failed to start",
+			 access_hook);
+		goto error_return;
+	}
+	if (strbuf_read(&buf, child.out, 0) < 0) {
+		logerror("failed to read from pipe to daemon access hook '%s'",
+			 access_hook);
+		strbuf_reset(&buf);
+		seen_errors = 1;
+	}
+	if (close(child.out) < 0) {
+		logerror("failed to close pipe to daemon access hook '%s'",
+			 access_hook);
+		seen_errors = 1;
+	}
+	if (finish_command(&child))
+		seen_errors = 1;
+
+	if (!seen_errors) {
+		strbuf_release(&buf);
+		return 0;
+	}
+
+error_return:
+	strbuf_ltrim(&buf);
+	if (!buf.len)
+		strbuf_addstr(&buf, "service rejected");
+	eol = strchr(buf.buf, '\n');
+	if (eol)
+		*eol = '\0';
+	errno = EACCES;
+	daemon_error(dir, buf.buf);
+	strbuf_release(&buf);
+	return -1;
+}
+
+static int run_service(const char *dir, struct daemon_service *service)
 {
 	const char *path;
 	int enabled = service->enabled;
@@ -302,6 +366,13 @@ static int run_service(char *dir, struct daemon_service *service)
 		errno = EACCES;
 		return daemon_error(dir, "service not enabled");
 	}
+
+	/*
+	 * Optionally, a hook can choose to deny access to the
+	 * repository depending on the phase of the moon.
+	 */
+	if (access_hook && run_access_hook(service, dir, path))
+		return -1;
 
 	/*
 	 * We'll ignore SIGTERM from now on, we have a
@@ -404,14 +475,6 @@ static void make_service_overridable(const char *name, int ena)
 		}
 	}
 	die("No such service %s", name);
-}
-
-static char *xstrdup_tolower(const char *str)
-{
-	char *p, *dup = xstrdup(str);
-	for (p = dup; *p; p++)
-		*p = tolower(*p);
-	return dup;
 }
 
 static void parse_host_and_port(char *hostport, char **host,
@@ -531,7 +594,7 @@ static void parse_host_arg(char *extra_args, int buflen)
 
 static int execute(void)
 {
-	static char line[1000];
+	char *line = packet_buffer;
 	int pktlen, len, i;
 	char *addr = getenv("REMOTE_ADDR"), *port = getenv("REMOTE_PORT");
 
@@ -539,7 +602,7 @@ static int execute(void)
 		loginfo("Connection from %s:%s", addr, port);
 
 	alarm(init_timeout ? init_timeout : timeout);
-	pktlen = packet_read_line(0, line, sizeof(line));
+	pktlen = packet_read(0, NULL, NULL, packet_buffer, sizeof(packet_buffer), 0);
 	alarm(0);
 
 	len = strlen(line);
@@ -563,15 +626,16 @@ static int execute(void)
 
 	for (i = 0; i < ARRAY_SIZE(daemon_service); i++) {
 		struct daemon_service *s = &(daemon_service[i]);
-		int namelen = strlen(s->name);
-		if (!prefixcmp(line, "git-") &&
-		    !strncmp(s->name, line + 4, namelen) &&
-		    line[namelen + 4] == ' ') {
+		const char *arg;
+
+		if (skip_prefix(line, "git-", &arg) &&
+		    skip_prefix(arg, s->name, &arg) &&
+		    *arg++ == ' ') {
 			/*
 			 * Note: The directory here is probably context sensitive,
 			 * and might depend on the actual service being performed.
 			 */
-			return run_service(line + namelen + 5, s);
+			return run_service(arg, s);
 		}
 	}
 
@@ -691,7 +755,7 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 		snprintf(portbuf, sizeof(portbuf), "REMOTE_PORT=%d",
 		    ntohs(sin_addr->sin_port));
 #ifndef NO_IPV6
-	} else if (addr && addr->sa_family == AF_INET6) {
+	} else if (addr->sa_family == AF_INET6) {
 		struct sockaddr_in6 *sin6_addr = (void *) addr;
 
 		char *buf = addrbuf + 12;
@@ -714,7 +778,6 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 		logerror("unable to fork");
 	else
 		add_child(&cld, addr, addrlen);
-	close(incoming);
 }
 
 static void child_handler(int signo)
@@ -978,18 +1041,6 @@ static int service_loop(struct socketlist *socklist)
 	}
 }
 
-/* if any standard file descriptor is missing open it to /dev/null */
-static void sanitize_stdfds(void)
-{
-	int fd = open("/dev/null", O_RDWR, 0);
-	while (fd != -1 && fd < 2)
-		fd = dup(fd);
-	if (fd == -1)
-		die_errno("open /dev/null or dup failed");
-	if (fd > 2)
-		close(fd);
-}
-
 #ifdef NO_POSIX_GOODIES
 
 struct credentials;
@@ -997,11 +1048,6 @@ struct credentials;
 static void drop_privileges(struct credentials *cred)
 {
 	/* nothing */
-}
-
-static void daemonize(void)
-{
-	die("--detach not supported on this platform");
 }
 
 static struct credentials *prepare_credentials(const char *user_name,
@@ -1044,24 +1090,6 @@ static struct credentials *prepare_credentials(const char *user_name,
 	}
 
 	return &c;
-}
-
-static void daemonize(void)
-{
-	switch (fork()) {
-		case 0:
-			break;
-		case -1:
-			die_errno("fork failed");
-		default:
-			exit(0);
-	}
-	if (setsid() == -1)
-		die_errno("setsid failed");
-	close(0);
-	close(1);
-	close(2);
-	sanitize_stdfds();
 }
 #endif
 
@@ -1107,16 +1135,17 @@ int main(int argc, char **argv)
 
 	for (i = 1; i < argc; i++) {
 		char *arg = argv[i];
+		const char *v;
 
-		if (!prefixcmp(arg, "--listen=")) {
-			string_list_append(&listen_addr, xstrdup_tolower(arg + 9));
+		if (skip_prefix(arg, "--listen=", &v)) {
+			string_list_append(&listen_addr, xstrdup_tolower(v));
 			continue;
 		}
-		if (!prefixcmp(arg, "--port=")) {
+		if (skip_prefix(arg, "--port=", &v)) {
 			char *end;
 			unsigned long n;
-			n = strtoul(arg+7, &end, 0);
-			if (arg[7] && !*end) {
+			n = strtoul(v, &end, 0);
+			if (*v && !*end) {
 				listen_port = n;
 				continue;
 			}
@@ -1142,16 +1171,20 @@ int main(int argc, char **argv)
 			export_all_trees = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--timeout=")) {
-			timeout = atoi(arg+10);
+		if (skip_prefix(arg, "--access-hook=", &v)) {
+			access_hook = v;
 			continue;
 		}
-		if (!prefixcmp(arg, "--init-timeout=")) {
-			init_timeout = atoi(arg+15);
+		if (skip_prefix(arg, "--timeout=", &v)) {
+			timeout = atoi(v);
 			continue;
 		}
-		if (!prefixcmp(arg, "--max-connections=")) {
-			max_connections = atoi(arg+18);
+		if (skip_prefix(arg, "--init-timeout=", &v)) {
+			init_timeout = atoi(v);
+			continue;
+		}
+		if (skip_prefix(arg, "--max-connections=", &v)) {
+			max_connections = atoi(v);
 			if (max_connections < 0)
 				max_connections = 0;	        /* unlimited */
 			continue;
@@ -1160,16 +1193,16 @@ int main(int argc, char **argv)
 			strict_paths = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--base-path=")) {
-			base_path = arg+12;
+		if (skip_prefix(arg, "--base-path=", &v)) {
+			base_path = v;
 			continue;
 		}
 		if (!strcmp(arg, "--base-path-relaxed")) {
 			base_path_relaxed = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--interpolated-path=")) {
-			interpolated_path = arg+20;
+		if (skip_prefix(arg, "--interpolated-path=", &v)) {
+			interpolated_path = v;
 			continue;
 		}
 		if (!strcmp(arg, "--reuseaddr")) {
@@ -1180,12 +1213,12 @@ int main(int argc, char **argv)
 			user_path = "";
 			continue;
 		}
-		if (!prefixcmp(arg, "--user-path=")) {
-			user_path = arg + 12;
+		if (skip_prefix(arg, "--user-path=", &v)) {
+			user_path = v;
 			continue;
 		}
-		if (!prefixcmp(arg, "--pid-file=")) {
-			pid_file = arg + 11;
+		if (skip_prefix(arg, "--pid-file=", &v)) {
+			pid_file = v;
 			continue;
 		}
 		if (!strcmp(arg, "--detach")) {
@@ -1193,35 +1226,35 @@ int main(int argc, char **argv)
 			log_syslog = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--user=")) {
-			user_name = arg + 7;
+		if (skip_prefix(arg, "--user=", &v)) {
+			user_name = v;
 			continue;
 		}
-		if (!prefixcmp(arg, "--group=")) {
-			group_name = arg + 8;
+		if (skip_prefix(arg, "--group=", &v)) {
+			group_name = v;
 			continue;
 		}
-		if (!prefixcmp(arg, "--enable=")) {
-			enable_service(arg + 9, 1);
+		if (skip_prefix(arg, "--enable=", &v)) {
+			enable_service(v, 1);
 			continue;
 		}
-		if (!prefixcmp(arg, "--disable=")) {
-			enable_service(arg + 10, 0);
+		if (skip_prefix(arg, "--disable=", &v)) {
+			enable_service(v, 0);
 			continue;
 		}
-		if (!prefixcmp(arg, "--allow-override=")) {
-			make_service_overridable(arg + 17, 1);
+		if (skip_prefix(arg, "--allow-override=", &v)) {
+			make_service_overridable(v, 1);
 			continue;
 		}
-		if (!prefixcmp(arg, "--forbid-override=")) {
-			make_service_overridable(arg + 18, 0);
+		if (skip_prefix(arg, "--forbid-override=", &v)) {
+			make_service_overridable(v, 0);
 			continue;
 		}
-		if (!prefixcmp(arg, "--informative-errors")) {
+		if (!strcmp(arg, "--informative-errors")) {
 			informative_errors = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--no-informative-errors")) {
+		if (!strcmp(arg, "--no-informative-errors")) {
 			informative_errors = 0;
 			continue;
 		}
@@ -1272,9 +1305,10 @@ int main(int argc, char **argv)
 	if (inetd_mode || serve_mode)
 		return execute();
 
-	if (detach)
-		daemonize();
-	else
+	if (detach) {
+		if (daemonize())
+			die("--detach not supported on this platform");
+	} else
 		sanitize_stdfds();
 
 	if (pid_file)

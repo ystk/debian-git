@@ -14,7 +14,7 @@
 static int line_termination = '\n';
 static int checkout_stage; /* default to checkout stage0 */
 static int to_tempfile;
-static char topath[4][PATH_MAX + 1];
+static char topath[4][TEMPORARY_FILENAME_LENGTH + 1];
 
 static struct checkout state;
 
@@ -123,7 +123,7 @@ static void checkout_all(const char *prefix, int prefix_length)
 }
 
 static const char * const builtin_checkout_index_usage[] = {
-	"git checkout-index [options] [--] [<file>...]",
+	N_("git checkout-index [options] [--] [<file>...]"),
 	NULL
 };
 
@@ -135,6 +135,7 @@ static int option_parse_u(const struct option *opt,
 	int *newfd = opt->value;
 
 	state.refresh_cache = 1;
+	state.istate = &the_index;
 	if (*newfd < 0)
 		*newfd = hold_locked_index(&lock_file, 1);
 	return 0;
@@ -183,28 +184,28 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 	int prefix_length;
 	int force = 0, quiet = 0, not_new = 0;
 	struct option builtin_checkout_index_options[] = {
-		OPT_BOOLEAN('a', "all", &all,
-			"checks out all files in the index"),
-		OPT__FORCE(&force, "forces overwrite of existing files"),
+		OPT_BOOL('a', "all", &all,
+			N_("check out all files in the index")),
+		OPT__FORCE(&force, N_("force overwrite of existing files")),
 		OPT__QUIET(&quiet,
-			"no warning for existing files and files not in index"),
-		OPT_BOOLEAN('n', "no-create", &not_new,
-			"don't checkout new files"),
+			N_("no warning for existing files and files not in index")),
+		OPT_BOOL('n', "no-create", &not_new,
+			N_("don't checkout new files")),
 		{ OPTION_CALLBACK, 'u', "index", &newfd, NULL,
-			"update stat information in the index file",
+			N_("update stat information in the index file"),
 			PARSE_OPT_NOARG, option_parse_u },
 		{ OPTION_CALLBACK, 'z', NULL, NULL, NULL,
-			"paths are separated with NUL character",
+			N_("paths are separated with NUL character"),
 			PARSE_OPT_NOARG, option_parse_z },
-		OPT_BOOLEAN(0, "stdin", &read_from_stdin,
-			"read list of paths from the standard input"),
-		OPT_BOOLEAN(0, "temp", &to_tempfile,
-			"write the content to temporary files"),
-		OPT_CALLBACK(0, "prefix", NULL, "string",
-			"when creating files, prepend <string>",
+		OPT_BOOL(0, "stdin", &read_from_stdin,
+			N_("read list of paths from the standard input")),
+		OPT_BOOL(0, "temp", &to_tempfile,
+			N_("write the content to temporary files")),
+		OPT_CALLBACK(0, "prefix", NULL, N_("string"),
+			N_("when creating files, prepend <string>"),
 			option_parse_prefix),
 		OPT_CALLBACK(0, "stage", NULL, NULL,
-			"copy out the files from named stage",
+			N_("copy out the files from named stage"),
 			option_parse_stage),
 		OPT_END()
 	};
@@ -279,8 +280,7 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 		checkout_all(prefix, prefix_length);
 
 	if (0 <= newfd &&
-	    (write_cache(newfd, active_cache, active_nr) ||
-	     commit_locked_index(&lock_file)))
+	    write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
 		die("Unable to write new index file");
 	return 0;
 }

@@ -31,7 +31,8 @@ static int update_ref_env(const char *action,
 		rla = "(reflog update)";
 	if (snprintf(msg, sizeof(msg), "%s: %s", rla, action) >= sizeof(msg))
 		warning("reflog message too long: %.*s...", 50, msg);
-	return update_ref(msg, refname, sha1, oldval, 0, QUIET_ON_ERR);
+	return update_ref(msg, refname, sha1, oldval, 0,
+			  UPDATE_REFS_QUIET_ON_ERR);
 }
 
 static int update_local_ref(const char *name,
@@ -96,7 +97,7 @@ static int update_local_ref(const char *name,
 	strcpy(oldh, find_unique_abbrev(current->object.sha1, DEFAULT_ABBREV));
 	strcpy(newh, find_unique_abbrev(sha1_new, DEFAULT_ABBREV));
 
-	if (in_merge_bases(current, &updated, 1)) {
+	if (in_merge_bases(current, updated)) {
 		fprintf(stderr, "* %s: fast-forward to %s\n",
 			name, note);
 		fprintf(stderr, "  old..new: %s..%s\n", oldh, newh);
@@ -518,7 +519,7 @@ int cmd_fetch__tool(int argc, const char **argv, const char *prefix)
 		filename = git_path("FETCH_HEAD");
 		fp = fopen(filename, "a");
 		if (!fp)
-			return error("cannot open %s: %s\n", filename, strerror(errno));
+			return error("cannot open %s: %s", filename, strerror(errno));
 		result = append_fetch_head(fp, argv[2], argv[3],
 					   argv[4], argv[5],
 					   argv[6], !!argv[7][0],
@@ -536,7 +537,7 @@ int cmd_fetch__tool(int argc, const char **argv, const char *prefix)
 		filename = git_path("FETCH_HEAD");
 		fp = fopen(filename, "a");
 		if (!fp)
-			return error("cannot open %s: %s\n", filename, strerror(errno));
+			return error("cannot open %s: %s", filename, strerror(errno));
 		result = fetch_native_store(fp, argv[2], argv[3], argv[4],
 					    verbose, force);
 		fclose(fp);

@@ -40,8 +40,7 @@ static int credential_config_callback(const char *var, const char *value,
 	struct credential *c = data;
 	const char *key, *dot;
 
-	key = skip_prefix(var, "credential.");
-	if (!key)
+	if (!skip_prefix(var, "credential.", &key))
 		return 0;
 
 	if (!value)
@@ -172,6 +171,8 @@ int credential_read(struct credential *c, FILE *fp)
 		} else if (!strcmp(key, "path")) {
 			free(c->path);
 			c->path = xstrdup(value);
+		} else if (!strcmp(key, "url")) {
+			credential_from_url(c, value);
 		}
 		/*
 		 * Ignore other lines; we don't know what they mean, but
@@ -191,7 +192,7 @@ static void credential_write_item(FILE *fp, const char *key, const char *value)
 	fprintf(fp, "%s=%s\n", key, value);
 }
 
-static void credential_write(const struct credential *c, FILE *fp)
+void credential_write(const struct credential *c, FILE *fp)
 {
 	credential_write_item(fp, "protocol", c->protocol);
 	credential_write_item(fp, "host", c->host);
