@@ -1,3 +1,42 @@
+git (1:2.1.4-2.1+deb8u5) jessie-security; urgency=high
+
+  * Fix remote shell command execution via CVS protocol:
+    - git-shell: drop cvsserver support by default
+    - git-cvsserver: harden backtick captures against user input
+  * Avoid shell command injection in other commands as well:
+    - git-cvsimport: harden backtick captures against user input
+    - git-archimport: harden backtick captures against user input
+
+  Thanks to joernchen of Phenoelit for discovering, reporting, and
+  fixing this vulnerability, and to Junio C Hamano and Jeff King for
+  the fixes to related issues.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 25 Sep 2017 12:12:03 -0700
+
+git (1:2.1.4-2.1+deb8u4) jessie-security; urgency=high
+
+  * Fix CVE-2017-1000117, arbitrary code execution issues via URLs:
+    - reject ssh hostname that begins with a dash
+    - add test for hostname starting with dash to the testsuite
+    - factor out "looks like command line option" check
+    - reject dashed arguments to $GIT_PROXY_COMMAND
+    - ssh:// and local URLs: reject path to repositories that look
+      like command line options
+
+    Thanks to Joern Schneeweisz of Recurity Labs for discovering this
+    vulnerability, Brian Neel at GitLab for reporting it to the Git
+    project, and Junio Hamano and Jeff King for writing the patches to
+    address it.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Wed, 09 Aug 2017 23:30:50 -0700
+
+git (1:2.1.4-2.1+deb8u3) jessie-security; urgency=high
+
+  * Do not allow git helpers run via git-shell to launch a pager
+    (CVE-2017-8386).
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Tue, 09 May 2017 16:18:46 -0700
+
 git (1:2.1.4-2.1+deb8u2) jessie-security; urgency=high
 
   * Non-maintainer upload by the Security Team.
