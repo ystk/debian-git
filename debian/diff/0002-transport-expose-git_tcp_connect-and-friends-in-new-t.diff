@@ -1,4 +1,4 @@
-From 44c9158e4c53b4ef52b89416aaa8f902b21e9c6f Mon Sep 17 00:00:00 2001
+From 004080317ea5e4fb1de08f30e3faa4a2ff2652e8 Mon Sep 17 00:00:00 2001
 From: Jonathan Nieder <jrnieder@gmail.com>
 Date: Mon, 6 Jun 2011 04:37:14 -0500
 Subject: transport: expose git_tcp_connect() and friends in new tcp.h
@@ -13,15 +13,15 @@ library easier to understand before adding to it.
 Signed-off-by: Jonathan Nieder <jrnieder@gmail.com>
 ---
  Makefile  |   2 +
- connect.c | 273 +------------------------------------------------------------
- tcp.c     | 277 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ connect.c | 273 +----------------------------------------------------
+ tcp.c     | 277 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
  tcp.h     |   9 ++
  4 files changed, 289 insertions(+), 272 deletions(-)
  create mode 100644 tcp.c
  create mode 100644 tcp.h
 
 diff --git a/Makefile b/Makefile
-index 2320de5..af7ddc0 100644
+index 9f984a9e55..a2e55c1a44 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -727,6 +727,7 @@ LIB_H += string-list.h
@@ -41,7 +41,7 @@ index 2320de5..af7ddc0 100644
  LIB_OBJS += transport.o
  LIB_OBJS += transport-helper.o
 diff --git a/connect.c b/connect.c
-index 5047402..adaab12 100644
+index e16e72d1a0..4cfeba2dd1 100644
 --- a/connect.c
 +++ b/connect.c
 @@ -6,6 +6,7 @@
@@ -52,7 +52,7 @@ index 5047402..adaab12 100644
  #include "url.h"
  #include "string-list.h"
  #include "sha1-array.h"
-@@ -278,278 +279,6 @@ static enum protocol get_protocol(const char *name)
+@@ -279,278 +280,6 @@ static enum protocol get_protocol(const char *name)
  	die("I don't handle protocol '%s'", name);
  }
  
@@ -333,7 +333,7 @@ index 5047402..adaab12 100644
  	char *end;
 diff --git a/tcp.c b/tcp.c
 new file mode 100644
-index 0000000..dd69502
+index 0000000000..dd69502df5
 --- /dev/null
 +++ b/tcp.c
 @@ -0,0 +1,277 @@
@@ -616,7 +616,7 @@ index 0000000..dd69502
 +
 diff --git a/tcp.h b/tcp.h
 new file mode 100644
-index 0000000..566afd4
+index 0000000000..566afd407b
 --- /dev/null
 +++ b/tcp.h
 @@ -0,0 +1,9 @@
@@ -630,5 +630,5 @@ index 0000000..566afd4
 +
 +#endif
 -- 
-2.0.0.526.g5318336
+2.17.0.921.gf22659ad46
 

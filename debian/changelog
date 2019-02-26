@@ -1,3 +1,74 @@
+git (1:2.1.4-2.1+deb8u7) jessie-security; urgency=high
+
+  * Fix CVE-2018-17456, arbitrary code execution via submodule URLs
+    and paths in .gitmodules file:
+    - submodule: ban submodule urls that start with a dash
+    - submodule: ban submodule paths that start with a dash
+    - submodule: use "--" to signal end of clone options
+    - fsck: detect submodule urls that start with a dash
+    - fsck: detect submodule paths that start with a dash
+
+    Thanks to joernchen of Phenoelit for discovering and reporting
+    this vulnerability and to Jeff King for fixing it.
+
+  * Correct incomplete shell command injection fix in git cvsimport in
+    1:2.1.4-2.1+deb8u5.  A malicious CVS server could trigger
+    arbitrary code execution by a user running "git cvsimport".
+    - cvsimport: apply shell-quoting regex globally
+
+    Thanks to littlelailo for discovering this vulnerability and to
+    Jeff King for fixing it.
+
+  * fsck: error out when .gitmodules is a symbolic link, completing
+    the backport of the patch "fsck: complain when .gitmodules is a
+    symlink" in 1:2.1.4-2.1+deb8u6.  Thanks to Pavel Cahyna for the
+    report and patch.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Fri, 05 Oct 2018 00:41:17 -0700
+
+git (1:2.1.4-2.1+deb8u6) jessie-security; urgency=high
+
+  * Fix CVE-2018-11235, arbitrary code execution via submodule names
+    in .gitmodules file:
+    - submodule: verify submodule names as paths
+    - fsck: drop inode-sorting code
+    - fsck: simplify ".git" check
+    - fsck: fsck blob data
+    - fsck: detect gitmodules files
+    - fsck: check .gitmodules content
+    - fsck: call fsck_finish after fscking objects
+    - unpack-objects: call fsck_finish after fscking objects
+    - index-pack: check .gitmodules files with --strict
+  * Fix CVE-2018-11233, out-of-bounds read when validating NTFS paths:
+    - is_ntfs_dotgit: use a size_t for traversing string
+  * Do not allow .gitmodules to be a symlink:
+    - is_hfs_dotgit: loosen over-eager match of \u{..47}
+    - is_hfs_dotgit: match other .git* files
+    - is_ntfs_dotgit: match other .git* files
+    - is_{hfs,ntfs}_dotgitmodules: add tests
+    - skip_prefix: add case-insensitive variant
+    - verify_path: drop clever fallthrough
+    - verify_dotfile: mention case-insensitivity in comment
+    - update-index: stat updated files earlier
+    - verify_path: disallow .gitmodules symlinks
+    - fsck: complain when .gitmodules is a symlink
+
+  Thanks to Brandon Williams, Etienne Stalmans, and Jeff King for
+  discovering and reporting these vulnerabilities and to Jeff King and
+  Johannes Schindelin for fixing them.
+
+  * Prevent "git apply" without --index from escaping the current
+    directory (compare GNU patch's CVE-2015-1196):
+    - apply: reject input that touches outside the working area
+    - apply: do not read from the filesystem under --index
+    - apply: do not read from beyond a symbolic link
+    - apply: do not touch a file beyond a symbolic link
+
+  Thanks to Josh Boyer for reporting this vulnerability and Junio C
+  Hamano for fixing it.
+
+ -- Jonathan Nieder <jrnieder@gmail.com>  Mon, 28 May 2018 16:30:30 -0700
+
 git (1:2.1.4-2.1+deb8u5) jessie-security; urgency=high
 
   * Fix remote shell command execution via CVS protocol:
