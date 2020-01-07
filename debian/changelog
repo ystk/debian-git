@@ -1,3 +1,16 @@
+git (1:2.1.4-2.1+deb8u8) jessie-security; urgency=high
+
+  * Non-maintainer upload by the LTS Team.
+  * Apply patches addressing the security issues CVE-2019-1348,
+    CVE-2019-1349, CVE-2019-1352, CVE-2019-1353, and CVE-2019-1387.
+
+    Credit for finding these vulnerabilities goes to Microsoft
+    Security Response Center, in particular to Nicolas Joly. Fixes
+    were provided by Jeff King and Johannes Schindelin with help
+    from Garima Singh.
+
+ -- Roberto C. Sanchez <roberto@debian.org>  Mon, 06 Jan 2020 22:10:30 -0500
+
 git (1:2.1.4-2.1+deb8u7) jessie-security; urgency=high
 
   * Fix CVE-2018-17456, arbitrary code execution via submodule URLs
