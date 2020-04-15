@@ -1,3 +1,20 @@
+git (1:2.1.4-2.1+deb8u9) jessie-security; urgency=high
+
+  * Non-maintainer upload by the LTS Team.
+  * Apply patches from 2.20.3 to address the security issue
+    CVE-2020-5260.
+
+    With a crafted URL that contains a newline, the credential
+    helper machinery can be fooled to supply credential information
+    for the wrong host.  The attack has been made impossible by
+    forbidding a newline character in any value passed via the
+    credential protocol.
+
+    Thanks to Felix Wilhelm of Google Project Zero for finding
+    this vulnerability and Jeff King for fixing it.
+
+ -- Roberto C. Sanchez <roberto@debian.org>  Tue, 14 Apr 2020 23:25:24 -0400
+
 git (1:2.1.4-2.1+deb8u8) jessie-security; urgency=high
 
   * Non-maintainer upload by the LTS Team.
