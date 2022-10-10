@@ -16,3 +16,6 @@
 16-CVE-2020-11008-5-credential-die-when-parsing-invalid-urls.patch
 17-CVE-2020-11008-6-credential-treat-URL-without-scheme-as-invalid.patch
 18-CVE-2020-11008-7-credential-treat-URL-with-empty-scheme-as-invalid.patch
+CVE-2021-21300.patch
+CVE-2021-40330.patch
+disable-t5540-http-push-webdav.patch
