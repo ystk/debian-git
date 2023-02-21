@@ -55,7 +55,7 @@ patch: deb-checkdir patch-stamp
 patch-stamp:
 	for i in `ls -1 debian/diff/*.diff debian/diff/*.patch \
 	    2>/dev/null || :`; do \
-	  patch -p1 -N -r- <$$i || test $$? = 1 || exit 1; \
+	  patch -p1 -N -r- <$$i || exit 1; \
 	done
 	chmod 775 t/*.sh
 	touch patch-stamp

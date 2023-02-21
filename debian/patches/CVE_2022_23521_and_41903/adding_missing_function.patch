@@ -1,0 +1,82 @@
+Description: Adding a missing function that is required
+Author: Leonidas S. Barbosa <leo.barbosa@canonical.com>
+Author: Emilio Pozuelo Monfort <pochu@debian.org>
+
+--- a/cache.h
++++ b/cache.h
+@@ -484,6 +484,24 @@ extern int daemonize(void);
+ 			x = xrealloc((x), alloc * sizeof(*(x))); \
+ 		} \
+ 	} while (0)
++/* 
++ * Similar to ALLOC_GROW but handles updating of the nr value and
++ * zeroing the bytes of the newly-grown array elements.
++ *
++ * DO NOT USE any expression with side-effect for any of the
++ * arguments.
++ */
++#define ALLOC_GROW_BY(x, nr, increase, alloc) \
++	do { \
++		if (increase) { \
++			size_t new_nr = nr + (increase); \
++			if (new_nr < nr) \
++				die("BUG: negative growth in ALLOC_GROW_BY"); \
++			ALLOC_GROW(x, new_nr, alloc); \
++			memset((x) + nr, 0, sizeof(*(x)) * (increase)); \
++			nr = new_nr; \
++		} \
++	} while (0)
+ 
+ /* Initialize and use the cache information */
+ struct lock_file;
+--- a/git-compat-util.h
++++ b/git-compat-util.h
+@@ -46,6 +46,14 @@
+ #define unsigned_add_overflows(a, b) \
+     ((b) > maximum_unsigned_value_of_type(a) - (a))
+ 
++/*
++ * Returns true if the multiplication of "a" and "b" will
++ * overflow. The types of "a" and "b" must match and must be unsigned.
++ * Note that this macro evaluates "a" twice!
++ */
++#define unsigned_mult_overflows(a, b) \
++    ((a) && (b) > maximum_unsigned_value_of_type(a) / (a))
++
+ #ifdef __GNUC__
+ #define TYPEOF(x) (__typeof__(x))
+ #else
+@@ -597,6 +605,24 @@ static inline int cast_size_t_to_int(siz
+ 	return (int)a;
+ }
+ 
++static inline size_t st_add(size_t a, size_t b)
++{
++	if (unsigned_add_overflows(a, b))
++		die("size_t overflow: %"PRIuMAX" + %"PRIuMAX,
++		    (uintmax_t)a, (uintmax_t)b);
++	return a + b;
++}
++#define st_add3(a,b,c)   st_add(st_add((a),(b)),(c))
++#define st_add4(a,b,c,d) st_add(st_add3((a),(b),(c)),(d))
++
++static inline size_t st_mult(size_t a, size_t b)
++{
++	if (unsigned_mult_overflows(a, b))
++		die("size_t overflow: %"PRIuMAX" * %"PRIuMAX,
++		    (uintmax_t)a, (uintmax_t)b);
++	return a * b;
++}
++
+ #ifdef HAVE_ALLOCA_H
+ # include <alloca.h>
+ # define xalloca(size)      (alloca(size))
+@@ -630,6 +656,8 @@ static inline size_t xsize_t(off_t len)
+ 	return (size_t)len;
+ }
+ 
++#define CALLOC_ARRAY(x, alloc) (x) = xcalloc((alloc), sizeof(*(x)));
++
+ /* in ctype.c, for kwset users */
+ extern const char tolower_trans_tbl[256];
+ 

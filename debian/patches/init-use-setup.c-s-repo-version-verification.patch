@@ -1,0 +1,57 @@
+From 94ce167249781d2c80ba28412d853c426d41a55a Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Fri, 11 Mar 2016 17:37:11 -0500
+Subject: [PATCH] init: use setup.c's repo version verification
+
+We check our templates to make sure they are from a
+version of git we understand (otherwise we would init a
+repository we cannot ourselves run in!). But our simple
+integer check has fallen behind the times. Let's use the
+helpers that setup.c provides to do it right.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ builtin/init-db.c | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+--- a/builtin/init-db.c
++++ b/builtin/init-db.c
+@@ -116,6 +116,8 @@ static void copy_templates(const char *t
+ 	char path[PATH_MAX];
+ 	char template_path[PATH_MAX];
+ 	int template_len;
++	struct repository_format template_format;
++	struct strbuf err = STRBUF_INIT;
+ 	DIR *dir;
+ 	const char *git_dir = get_git_dir();
+ 	int len = strlen(git_dir);
+@@ -144,18 +146,18 @@ static void copy_templates(const char *t
+ 
+ 	/* Make sure that template is from the correct vintage */
+ 	strcpy(template_path + template_len, "config");
+-	repository_format_version = 0;
+-	git_config_from_file(check_repository_format_version,
+-			     template_path, NULL);
++	read_repository_format(&template_format, template_path);
+ 	template_path[template_len] = 0;
+ 
+-	if (repository_format_version &&
+-	    repository_format_version != GIT_REPO_VERSION) {
+-		warning(_("not copying templates of "
+-			"a wrong format version %d from '%s'"),
+-			repository_format_version,
+-			template_dir);
+-		closedir(dir);
++	/*
++	 * No mention of version at all is OK, but anything else should be
++	 * verified.
++	 */
++	if (template_format.version >= 0 &&
++	    verify_repository_format(&template_format, &err) < 0) {
++		warning(_("not copying templates from '%s': %s"),
++			  template_dir, err.buf);
++		strbuf_release(&err);
+ 		return;
+ 	}
+ 

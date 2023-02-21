@@ -1,0 +1,75 @@
+From 1d186b6f3517b88325fec893f53cf59c3098f409 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Nguy=E1=BB=85n=20Th=C3=A1i=20Ng=E1=BB=8Dc=20Duy?=
+ <pclouds@gmail.com>
+Date: Sun, 30 Nov 2014 15:24:40 +0700
+Subject: [PATCH] setup.c: convert is_git_directory() to use strbuf
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Nguyễn Thái Ngọc Duy <pclouds@gmail.com>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ setup.c | 37 +++++++++++++++++++++----------------
+ 1 file changed, 21 insertions(+), 16 deletions(-)
+
+diff --git a/setup.c b/setup.c
+index 979b13f0c6..afd6742cd7 100644
+--- a/setup.c
++++ b/setup.c
+@@ -238,31 +238,36 @@ void verify_non_filename(const char *prefix, const char *arg)
+  */
+ int is_git_directory(const char *suspect)
+ {
+-	char path[PATH_MAX];
+-	size_t len = strlen(suspect);
++	struct strbuf path = STRBUF_INIT;
++	int ret = 0;
++	size_t len;
+ 
+-	if (PATH_MAX <= len + strlen("/objects"))
+-		die("Too long path: %.*s", 60, suspect);
+-	strcpy(path, suspect);
++	strbuf_addstr(&path, suspect);
++	len = path.len;
+ 	if (getenv(DB_ENVIRONMENT)) {
+ 		if (access(getenv(DB_ENVIRONMENT), X_OK))
+-			return 0;
++			goto done;
+ 	}
+ 	else {
+-		strcpy(path + len, "/objects");
+-		if (access(path, X_OK))
+-			return 0;
++		strbuf_addstr(&path, "/objects");
++		if (access(path.buf, X_OK))
++			goto done;
+ 	}
+ 
+-	strcpy(path + len, "/refs");
+-	if (access(path, X_OK))
+-		return 0;
++	strbuf_setlen(&path, len);
++	strbuf_addstr(&path, "/refs");
++	if (access(path.buf, X_OK))
++		goto done;
+ 
+-	strcpy(path + len, "/HEAD");
+-	if (validate_headref(path))
+-		return 0;
++	strbuf_setlen(&path, len);
++	strbuf_addstr(&path, "/HEAD");
++	if (validate_headref(path.buf))
++		goto done;
+ 
+-	return 1;
++	ret = 1;
++done:
++	strbuf_release(&path);
++	return ret;
+ }
+ 
+ int is_inside_git_dir(void)
+-- 
+2.30.2
+

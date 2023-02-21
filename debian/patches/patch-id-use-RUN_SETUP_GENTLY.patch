@@ -1,0 +1,66 @@
+From 4a73aaaf18099ec1897330dd6c4a09f10ea2f573 Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Mon, 12 Sep 2016 20:23:22 -0700
+Subject: [PATCH] patch-id: use RUN_SETUP_GENTLY
+
+Patch-id does not require a repository because it is just
+processing the incoming diff on stdin, but it may look at
+git config for keys like patchid.stable.
+
+Even though we do not setup_git_directory(), this works from
+the top-level of a repository because we blindly look at
+".git/config" in this case. But as the included test
+demonstrates, it does not work from a subdirectory.
+
+We can fix it by using RUN_SETUP_GENTLY. We do not take any
+filenames from the user on the command line, so there's no
+need to adjust them via prefix_filename().
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ git.c               |  2 +-
+ t/t4204-patch-id.sh | 14 ++++++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/git.c b/git.c
+index 968a8a4645..03151f51e6 100644
+--- a/git.c
++++ b/git.c
+@@ -444,7 +444,7 @@ static struct cmd_struct commands[] = {
+ 	{ "pack-objects", cmd_pack_objects, RUN_SETUP },
+ 	{ "pack-redundant", cmd_pack_redundant, RUN_SETUP },
+ 	{ "pack-refs", cmd_pack_refs, RUN_SETUP },
+-	{ "patch-id", cmd_patch_id },
++	{ "patch-id", cmd_patch_id, RUN_SETUP_GENTLY },
+ 	{ "pickaxe", cmd_blame, RUN_SETUP },
+ 	{ "prune", cmd_prune, RUN_SETUP },
+ 	{ "prune-packed", cmd_prune_packed, RUN_SETUP },
+diff --git a/t/t4204-patch-id.sh b/t/t4204-patch-id.sh
+index baa9d3c82e..10b6ad02e2 100755
+--- a/t/t4204-patch-id.sh
++++ b/t/t4204-patch-id.sh
+@@ -143,6 +143,20 @@ test_expect_success 'patch-id supports git-format-patch MIME output' '
+ 	test_cmp patch-id_master patch-id_same
+ '
+ 
++test_expect_success 'patch-id respects config from subdir' '
++	test_config patchid.stable true &&
++	mkdir subdir &&
++
++	# copy these because test_patch_id() looks for them in
++	# the current directory
++	cp bar-then-foo foo-then-bar subdir &&
++
++	(
++		cd subdir &&
++		test_patch_id irrelevant patchid.stable=true
++	)
++'
++
+ cat >nonl <<\EOF
+ diff --git i/a w/a
+ index e69de29..2e65efe 100644
+-- 
+2.30.2
+

@@ -1,0 +1,56 @@
+From 7d0fb0da950026c08a88d8374be5716dafce72cc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Nguy=E1=BB=85n=20Th=C3=A1i=20Ng=E1=BB=8Dc=20Duy?=
+ <pclouds@gmail.com>
+Date: Sun, 30 Nov 2014 15:24:42 +0700
+Subject: [PATCH] setup.c: convert check_repository_format_gently to use strbuf
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Nguyễn Thái Ngọc Duy <pclouds@gmail.com>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ setup.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/setup.c b/setup.c
+index 6c52f75853..00a23e6edf 100644
+--- a/setup.c
++++ b/setup.c
+@@ -342,7 +342,9 @@ void setup_work_tree(void)
+ 
+ static int check_repository_format_gently(const char *gitdir, int *nongit_ok)
+ {
+-	char repo_config[PATH_MAX+1];
++	struct strbuf sb = STRBUF_INIT;
++	const char *repo_config;
++	int ret = 0;
+ 
+ 	/*
+ 	 * git_config() can't be used here because it calls git_pathdup()
+@@ -353,7 +355,8 @@ static int check_repository_format_gently(const char *gitdir, int *nongit_ok)
+ 	 * Use a gentler version of git_config() to check if this repo
+ 	 * is a good one.
+ 	 */
+-	snprintf(repo_config, PATH_MAX, "%s/config", gitdir);
++	strbuf_addf(&sb, "%s/config", gitdir);
++	repo_config = sb.buf;
+ 	git_config_early(check_repository_format_version, NULL, repo_config);
+ 	if (GIT_REPO_VERSION < repository_format_version) {
+ 		if (!nongit_ok)
+@@ -363,9 +366,10 @@ static int check_repository_format_gently(const char *gitdir, int *nongit_ok)
+ 			GIT_REPO_VERSION, repository_format_version);
+ 		warning("Please upgrade Git");
+ 		*nongit_ok = -1;
+-		return -1;
++		ret = -1;
+ 	}
+-	return 0;
++	strbuf_release(&sb);
++	return ret;
+ }
+ 
+ /*
+-- 
+2.30.2
+

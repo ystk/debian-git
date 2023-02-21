@@ -1,0 +1,78 @@
+From 30c586ff15935d4439ab31f9ab8424f28e6b461e Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Fri, 28 Jul 2017 17:47:48 -0400
+Subject: [PATCH] t/lib-proto-disable: restore protocol.allow after config
+ tests
+
+The tests for protocol.allow actually set that variable in
+the on-disk config, run a series of tests, and then never
+clean up after themselves. This means that whatever tests we
+run after have protocol.allow=never, which may influence
+their results.
+
+In most cases we either exit after running these tests, or
+do another round of test_proto(). In the latter case, this happens to
+work because:
+
+  1. Tests of the GIT_ALLOW_PROTOCOL environment variable
+     override the config.
+
+  2. Tests of the specific config "protocol.foo.allow"
+     override the protocol.allow config.
+
+  3. The next round of protocol.allow tests start off by
+     setting the config to a known value.
+
+However, it's a land-mine waiting to trap somebody adding
+new tests to one of the t581x test scripts. Let's make sure
+we clean up after ourselves.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ t/lib-proto-disable.sh | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/t/lib-proto-disable.sh b/t/lib-proto-disable.sh
+index 02f49cb409..83babe57d9 100644
+--- a/t/lib-proto-disable.sh
++++ b/t/lib-proto-disable.sh
+@@ -147,29 +147,33 @@ test_config () {
+ 	# Test clone/fetch/push with protocol.allow user defined default
+ 	test_expect_success "clone $desc (enabled)" '
+ 		rm -rf tmp.git &&
+-		git config --global protocol.allow always &&
++		test_config_global protocol.allow always &&
+ 		git clone --bare "$url" tmp.git
+ 	'
+ 
+ 	test_expect_success "fetch $desc (enabled)" '
++		test_config_global protocol.allow always &&
+ 		git -C tmp.git fetch
+ 	'
+ 
+ 	test_expect_success "push $desc (enabled)" '
++		test_config_global protocol.allow always &&
+ 		git -C tmp.git push origin HEAD:pushed
+ 	'
+ 
+ 	test_expect_success "push $desc (disabled)" '
+-		git config --global protocol.allow never &&
++		test_config_global protocol.allow never &&
+ 		test_must_fail git -C tmp.git push origin HEAD:pushed
+ 	'
+ 
+ 	test_expect_success "fetch $desc (disabled)" '
++		test_config_global protocol.allow never &&
+ 		test_must_fail git -C tmp.git fetch
+ 	'
+ 
+ 	test_expect_success "clone $desc (disabled)" '
+ 		rm -rf tmp.git &&
++		test_config_global protocol.allow never &&
+ 		test_must_fail git clone --bare "$url" tmp.git
+ 	'
+ }
+-- 
+2.30.2
+

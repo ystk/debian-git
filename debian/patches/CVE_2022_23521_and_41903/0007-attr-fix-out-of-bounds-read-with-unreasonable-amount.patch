@@ -1,0 +1,69 @@
+From 447ac906e189535e77dcb1f4bbe3f1bc917d4c12 Mon Sep 17 00:00:00 2001
+From: Patrick Steinhardt <ps@pks.im>
+Date: Thu, 1 Dec 2022 15:45:31 +0100
+Subject: [PATCH 07/25] attr: fix out-of-bounds read with unreasonable amount
+ of patterns
+
+The `struct attr_stack` tracks the stack of all patterns together with
+their attributes. When parsing a gitattributes file that has more than
+2^31 such patterns though we may trigger multiple out-of-bounds reads on
+64 bit platforms. This is because while the `num_matches` variable is an
+unsigned integer, we always use a signed integer to iterate over them.
+
+I have not been able to reproduce this issue due to memory constraints
+on my systems. But despite the out-of-bounds reads, the worst thing that
+can seemingly happen is to call free(3P) with a garbage pointer when
+calling `attr_stack_free()`.
+
+Fix this bug by using unsigned integers to iterate over the array. While
+this makes the iteration somewhat awkward when iterating in reverse, it
+is at least better than knowingly running into an out-of-bounds read.
+While at it, convert the call to `ALLOC_GROW` to use `ALLOC_GROW_BY`
+instead.
+
+Signed-off-by: Patrick Steinhardt <ps@pks.im>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ attr.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+--- a/attr.c
++++ b/attr.c
+@@ -308,7 +308,7 @@ static struct attr_stack {
+ 
+ static void free_attr_elem(struct attr_stack *e)
+ {
+-	int i;
++	unsigned i;
+ 	free(e->origin);
+ 	for (i = 0; i < e->num_matches; i++) {
+ 		struct match_attr *a = e->attrs[i];
+@@ -346,8 +346,8 @@ static void handle_attr_line(struct attr
+ 	a = parse_attr_line(line, src, lineno, macro_ok);
+ 	if (!a)
+ 		return;
+-	ALLOC_GROW(res->attrs, res->num_matches + 1, res->alloc);
+-	res->attrs[res->num_matches++] = a;
++	ALLOC_GROW_BY(res->attrs, res->num_matches, 1, res->alloc);
++	res->attrs[res->num_matches - 1] = a;
+ }
+ 
+ static struct attr_stack *read_attr_from_array(const char **list)
+@@ -701,14 +701,14 @@ static int macroexpand_one(int nr, int r
+ {
+ 	struct attr_stack *stk;
+ 	struct match_attr *a = NULL;
+-	int i;
++	unsigned i;
+ 
+ 	if (check_all_attr[attr_nr].value != ATTR__TRUE)
+ 		return rem;
+ 
+ 	for (stk = attr_stack; !a && stk; stk = stk->prev)
+-		for (i = stk->num_matches - 1; !a && 0 <= i; i--) {
+-			struct match_attr *ma = stk->attrs[i];
++		for (i = stk->num_matches; !a && i > 0; i--) {
++			struct match_attr *ma = stk->attrs[i - 1];
+ 			if (!ma->is_macro)
+ 				continue;
+ 			if (ma->u.attr->attr_nr == attr_nr)

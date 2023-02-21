@@ -1,0 +1,172 @@
+Emilio: this version of git creates .git/config with u+x. We
+could backport upstream commit 1f32ecffd86, but to avoid any
+possible side effects, let's just update the test case.
+
+From b9605bc4f2e44042824571f70b9a3a74eeebabff Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Mon, 12 Sep 2016 20:24:15 -0700
+Subject: [PATCH] config: only read .git/config from configured repos
+
+When git_config() runs, it looks in the system, user-wide,
+and repo-level config files. It gets the latter by calling
+git_pathdup(), which in turn calls get_git_dir(). If we
+haven't set up the git repository yet, this may simply
+return ".git", and we will look at ".git/config".  This
+seems like it would be helpful (presumably we haven't set up
+the repository yet, so it tries to find it), but it turns
+out to be a bad idea for a few reasons:
+
+  - it's not sufficient, and therefore hides bugs in a
+    confusing way. Config will be respected if commands are
+    run from the top-level of the working tree, but not from
+    a subdirectory.
+
+  - it's not always true that we haven't set up the
+    repository _yet_; we may not want to do it at all. For
+    instance, if you run "git init /some/path" from inside
+    another repository, it should not load config from the
+    existing repository.
+
+  - there might be a path ".git/config", but it is not the
+    actual repository we would find via setup_git_directory().
+    This may happen, e.g., if you are storing a git
+    repository inside another git repository, but have
+    munged one of the files in such a way that the
+    inner repository is not valid (e.g., by removing HEAD).
+
+We have at least two bugs of the second type in git-init,
+introduced by ae5f677 (lazily load core.sharedrepository,
+2016-03-11). It causes init to use git_configset(), which
+loads all of the config, including values from the current
+repo (if any).  This shows up in two ways:
+
+  1. If we happen to be in an existing repository directory,
+     we'll read and respect core.sharedrepository from it,
+     even though it should have no bearing on the new
+     repository. A new test in t1301 covers this.
+
+  2. Similarly, if we're in an existing repo that sets
+     core.logallrefupdates, that will cause init to fail to
+     set it in a newly created repository (because it thinks
+     that the user's templates already did so). A new test
+     in t0001 covers this.
+
+We also need to adjust an existing test in t1302, which
+gives another example of why this patch is an improvement.
+
+That test creates an embedded repository with a bogus
+core.repositoryformatversion of "99". It wants to make sure
+that we actually stop at the bogus repo rather than
+continuing upward to find the outer repo. So it checks that
+"git config core.repositoryformatversion" returns 99. But
+that only works because we blindly read ".git/config", even
+though we _know_ we're in a repository whose vintage we do
+not understand.
+
+After this patch, we avoid reading config from the unknown
+vintage repository at all, which is a safer choice.  But we
+need to tweak the test, since core.repositoryformatversion
+will not return 99; it will claim that it could not find the
+variable at all.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ cache.h                 | 6 ++++++
+ config.c                | 2 +-
+ environment.c           | 7 +++++++
+ t/t0001-init.sh         | 9 +++++++++
+ t/t1301-shared-repo.sh  | 9 +++++++++
+ t/t1302-repo-version.sh | 4 +---
+ 6 files changed, 33 insertions(+), 4 deletions(-)
+
+--- a/cache.h
++++ b/cache.h
+@@ -423,6 +423,12 @@ static inline enum object_type object_ty
+  */
+ extern const char * const local_repo_env[];
+ 
++/*
++ * Returns true iff we have a configured git repository (either via
++ * setup_git_directory, or in the environment via $GIT_DIR).
++ */
++int have_git_dir(void);
++
+ extern int is_bare_repository_cfg;
+ extern int is_bare_repository(void);
+ extern int is_inside_git_dir(void);
+--- a/config.c
++++ b/config.c
+@@ -1147,7 +1147,7 @@ static int do_git_config_sequence(config
+ 	int ret = 0, found = 0;
+ 	char *xdg_config = NULL;
+ 	char *user_config = NULL;
+-	char *repo_config = git_pathdup("config");
++	char *repo_config = have_git_dir() ? git_pathdup("config") : NULL;
+ 
+ 	home_config_paths(&user_config, &xdg_config, "config");
+ 
+--- a/environment.c
++++ b/environment.c
+@@ -168,6 +168,13 @@ int is_bare_repository(void)
+ 	return is_bare_repository_cfg && !get_git_work_tree();
+ }
+ 
++int have_git_dir(void)
++{
++	return startup_info->have_repository
++		|| git_dir
++		|| getenv(GIT_DIR_ENVIRONMENT);
++}
++
+ const char *get_git_dir(void)
+ {
+ 	if (!git_dir)
+--- a/t/t0001-init.sh
++++ b/t/t0001-init.sh
+@@ -332,4 +332,13 @@ test_expect_success SYMLINKS 're-init to
+ 	test_path_is_dir realgitdir/refs
+ '
+ 
++test_expect_success 'remote init from does not use config from cwd' '
++	rm -rf newdir &&
++	test_config core.logallrefupdates true &&
++	git init newdir &&
++	echo true >expect &&
++	git -C newdir config --bool core.logallrefupdates >actual &&
++	test_cmp expect actual
++'
++
+ test_done
+--- a/t/t1301-shared-repo.sh
++++ b/t/t1301-shared-repo.sh
+@@ -167,4 +167,13 @@ test_expect_success POSIXPERM 'forced mo
+ 	}" actual)"
+ '
+ 
++test_expect_success POSIXPERM 'remote init does not use config from cwd' '
++	git config core.sharedrepository 0666 &&
++	umask 0022 &&
++	git init --bare child.git &&
++	echo "-rwxr--r--" >expect &&
++	modebits child.git/config >actual &&
++	test_cmp expect actual
++'
++
+ test_done
+--- a/t/t1302-repo-version.sh
++++ b/t/t1302-repo-version.sh
+@@ -35,12 +35,7 @@ test_expect_success 'gitdir selection on
+ 
+ test_expect_success 'gitdir selection on unsupported repo' '
+ 	# Make sure it would stop at test2, not trash
+-	echo 99 >expect &&
+-	(
+-		cd test2 &&
+-		git config core.repositoryformatversion >../actual
+-	) &&
+-	test_cmp expect actual
++	test_expect_code 1 git -C test2 config core.repositoryformatversion >actual
+ '
+ 
+ test_expect_success 'gitdir not required mode' '

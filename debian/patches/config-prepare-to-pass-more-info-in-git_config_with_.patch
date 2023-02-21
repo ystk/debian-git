@@ -1,0 +1,183 @@
+From c48f4b379eb3a0d093f5a87cce1d2ed6c175104f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Nguy=E1=BB=85n=20Th=C3=A1i=20Ng=E1=BB=8Dc=20Duy?=
+ <pclouds@gmail.com>
+Date: Mon, 17 Apr 2017 17:10:00 +0700
+Subject: [PATCH] config: prepare to pass more info in
+ git_config_with_options()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+So far we can only pass one flag, respect_includes, to thie function. We
+need to pass some more (non-flag even), so let's make it accept a struct
+instead of an integer.
+
+Signed-off-by: Nguyễn Thái Ngọc Duy <pclouds@gmail.com>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ builtin/config.c | 21 ++++++++++++---------
+ cache.h          |  7 ++++++-
+ config.c         | 16 +++++++++++-----
+ 3 files changed, 29 insertions(+), 15 deletions(-)
+
+--- a/builtin/config.c
++++ b/builtin/config.c
+@@ -25,7 +25,8 @@ static struct git_config_source given_co
+ static int actions, types;
+ static const char *get_color_slot, *get_colorbool_slot;
+ static int end_null;
+-static int respect_includes = -1;
++static int respect_includes_opt = -1;
++static struct config_options config_options;
+ 
+ #define ACTION_GET (1<<0)
+ #define ACTION_GET_ALL (1<<1)
+@@ -78,7 +79,7 @@ static struct option builtin_config_opti
+ 	OPT_BIT(0, "path", &types, N_("value is a path (file or directory name)"), TYPE_PATH),
+ 	OPT_GROUP(N_("Other")),
+ 	OPT_BOOL('z', "null", &end_null, N_("terminate values with NUL byte")),
+-	OPT_BOOL(0, "includes", &respect_includes, N_("respect include directives on lookup")),
++	OPT_BOOL(0, "includes", &respect_includes_opt, N_("respect include directives on lookup")),
+ 	OPT_END(),
+ };
+ 
+@@ -223,7 +224,7 @@ static int get_value(const char *key_, c
+ 	}
+ 
+ 	git_config_with_options(collect_config, &values,
+-				&given_config_source, respect_includes);
++				&given_config_source, &config_options);
+ 
+ 	ret = !values.nr;
+ 
+@@ -307,7 +308,7 @@ static void get_color(const char *def_co
+ 	get_color_found = 0;
+ 	parsed_color[0] = '\0';
+ 	git_config_with_options(git_get_color_config, NULL,
+-				&given_config_source, respect_includes);
++				&given_config_source, &config_options);
+ 
+ 	if (!get_color_found && def_color)
+ 		color_parse(def_color, "command line", parsed_color);
+@@ -336,7 +337,7 @@ static int get_colorbool(int print)
+ 	get_diff_color_found = -1;
+ 	get_color_ui_found = -1;
+ 	git_config_with_options(git_get_colorbool_config, NULL,
+-				&given_config_source, respect_includes);
++				&given_config_source, &config_options);
+ 
+ 	if (get_colorbool_found < 0) {
+ 		if (!strcmp(get_colorbool_slot, "color.diff"))
+@@ -421,7 +422,7 @@ static int get_urlmatch(const char *var,
+ 	}
+ 
+ 	git_config_with_options(urlmatch_config_entry, &config,
+-				&given_config_source, respect_includes);
++				&given_config_source, &config_options);
+ 
+ 	for_each_string_list_item(item, &values) {
+ 		struct urlmatch_current_candidate_value *matched = item->util;
+@@ -501,8 +502,10 @@ int cmd_config(int argc, const char **ar
+ 							given_config_source.file));
+ 	}
+ 
+-	if (respect_includes == -1)
+-		respect_includes = !given_config_source.file;
++	if (respect_includes_opt == -1)
++		config_options.respect_includes = !given_config_source.file;
++	else
++		config_options.respect_includes = respect_includes_opt;
+ 
+ 	if (end_null) {
+ 		term = '\0';
+@@ -542,7 +545,7 @@ int cmd_config(int argc, const char **ar
+ 		check_argc(argc, 0, 0);
+ 		if (git_config_with_options(show_all_config, NULL,
+ 					    &given_config_source,
+-					    respect_includes) < 0) {
++					    &config_options) < 0) {
+ 			if (given_config_source.file)
+ 				die_errno("unable to read config file '%s'",
+ 					  given_config_source.file);
+--- a/cache.h
++++ b/cache.h
+@@ -1317,6 +1317,10 @@ struct git_config_source {
+ 	const char *blob;
+ };
+ 
++struct config_options {
++	unsigned int respect_includes : 1;
++};
++
+ typedef int (*config_fn_t)(const char *, const char *, void *);
+ extern int git_default_config(const char *, const char *, void *);
+ extern int git_config_from_file(config_fn_t fn, const char *, void *);
+@@ -1328,7 +1332,7 @@ extern void read_early_config(config_fn_
+ extern void git_config(config_fn_t fn, void *);
+ extern int git_config_with_options(config_fn_t fn, void *,
+ 				   struct git_config_source *config_source,
+-				   int respect_includes);
++				   const struct config_options *opts);
+ extern int git_parse_ulong(const char *, unsigned long *);
+ extern int git_config_int(const char *, const char *);
+ extern int64_t git_config_int64(const char *, const char *);
+@@ -1362,6 +1366,7 @@ struct config_include_data {
+ 	int depth;
+ 	config_fn_t fn;
+ 	void *data;
++	const struct config_options *opts;
+ };
+ #define CONFIG_INCLUDE_INIT { 0 }
+ extern int git_config_include(const char *name, const char *value, void *data);
+--- a/config.c
++++ b/config.c
+@@ -1191,13 +1191,14 @@ static int do_git_config_sequence(config
+ 
+ int git_config_with_options(config_fn_t fn, void *data,
+ 			    struct git_config_source *config_source,
+-			    int respect_includes)
++			    const struct config_options *opts)
+ {
+ 	struct config_include_data inc = CONFIG_INCLUDE_INIT;
+ 
+-	if (respect_includes) {
++	if (opts->respect_includes) {
+ 		inc.fn = fn;
+ 		inc.data = data;
++		inc.opts = opts;
+ 		fn = git_config_include;
+ 		data = &inc;
+ 	}
+@@ -1218,9 +1219,11 @@ int git_config_with_options(config_fn_t
+ 
+ void read_early_config(config_fn_t cb, void *data)
+ {
++	struct config_options opts = {0};
+ 	struct strbuf buf = STRBUF_INIT;
+ 
+-	git_config_with_options(cb, data, NULL, 1);
++	opts.respect_includes = 1;
++	git_config_with_options(cb, data, NULL, &opts);
+ 
+ 	/*
+ 	 * When setup_git_directory() was not yet asked to discover the
+@@ -1236,14 +1239,17 @@ void read_early_config(config_fn_t cb, v
+ 		memset(&repo_config, 0, sizeof(repo_config));
+ 		strbuf_addstr(&buf, "/config");
+ 		repo_config.file = buf.buf;
+-		git_config_with_options(cb, data, &repo_config, 1);
++		git_config_with_options(cb, data, &repo_config, &opts);
+ 	}
+ 	strbuf_release(&buf);
+ }
+ 
+ void git_config(config_fn_t fn, void *data)
+ {
+-	if (git_config_with_options(fn, data, NULL, 1) < 0)
++	struct config_options opts = {0};
++
++	opts.respect_includes = 1;
++	if (git_config_with_options(fn, data, NULL, &opts) < 0)
+ 		/*
+ 		 * git_config_with_options() normally returns only
+ 		 * positive values, as most errors are fatal, and

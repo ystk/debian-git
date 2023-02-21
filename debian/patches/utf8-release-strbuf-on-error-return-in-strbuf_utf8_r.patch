@@ -1,0 +1,35 @@
+From 9a012bf32a3b21648ab96f2bd234a563c22e0ae7 Mon Sep 17 00:00:00 2001
+From: Rene Scharfe <l.s.r@web.de>
+Date: Wed, 30 Aug 2017 20:20:16 +0200
+Subject: [PATCH] utf8: release strbuf on error return in strbuf_utf8_replace()
+
+Signed-off-by: Rene Scharfe <l.s.r@web.de>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ utf8.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/utf8.c b/utf8.c
+index 0c8e011a58..47a42047c8 100644
+--- a/utf8.c
++++ b/utf8.c
+@@ -381,7 +381,7 @@ void strbuf_utf8_replace(struct strbuf *sb_src, int pos, int width,
+ 		old = src;
+ 		n = utf8_width((const char**)&src, NULL);
+ 		if (!src) 	/* broken utf-8, do nothing */
+-			return;
++			goto out;
+ 		if (n && w >= pos && w < pos + width) {
+ 			if (subst) {
+ 				memcpy(dst, subst, subst_len);
+@@ -397,6 +397,7 @@ void strbuf_utf8_replace(struct strbuf *sb_src, int pos, int width,
+ 	}
+ 	strbuf_setlen(&sb_dst, dst - sb_dst.buf);
+ 	strbuf_swap(sb_src, &sb_dst);
++out:
+ 	strbuf_release(&sb_dst);
+ }
+ 
+-- 
+2.30.2
+

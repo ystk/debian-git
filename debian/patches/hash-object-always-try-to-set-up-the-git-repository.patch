@@ -1,0 +1,85 @@
+From 0e94ee9415e6cf6952b755347b57319e93356210 Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Mon, 12 Sep 2016 20:23:17 -0700
+Subject: [PATCH] hash-object: always try to set up the git repository
+
+When "hash-object" is run without "-w", we don't need to be
+in a git repository at all; we can just hash the object and
+write its sha1 to stdout. However, if we _are_ in a git
+repository, we would want to know that so we can follow the
+normal rules for respecting config, .gitattributes, etc.
+
+This happens to work at the top-level of a git repository
+because we blindly read ".git/config", but as the included
+test shows, it does not work when you are in a subdirectory.
+
+The solution is to just do a "gentle" setup in this case. We
+already take care to use prefix_filename() on any filename
+arguments we get (to handle the "-w" case), so we don't need
+to do anything extra to handle the side effects of repo
+setup.
+
+An alternative would be to specify RUN_SETUP_GENTLY for this
+command in git.c, and then die if "-w" is set but we are not
+in a repository. However, the error messages generated at
+the time of setup_git_directory() are more detailed, so it's
+better to find out which mode we are in, and then call the
+appropriate function.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ builtin/hash-object.c  | 13 ++++++++-----
+ t/t1007-hash-object.sh | 11 +++++++++++
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+--- a/builtin/hash-object.c
++++ b/builtin/hash-object.c
+@@ -66,6 +66,7 @@ static const char *type;
+ static int write_object;
+ static int hashstdin;
+ static int stdin_paths;
++static int nongit;
+ static const char *vpath;
+ 
+ static const struct option hash_object_options[] = {
+@@ -89,12 +90,14 @@ int cmd_hash_object(int argc, const char
+ 	argc = parse_options(argc, argv, NULL, hash_object_options,
+ 			     hash_object_usage, 0);
+ 
+-	if (write_object) {
++	if (write_object)
+ 		prefix = setup_git_directory();
+-		prefix_length = prefix ? strlen(prefix) : 0;
+-		if (vpath && prefix)
+-			vpath = prefix_filename(prefix, prefix_length, vpath);
+-	}
++	else
++		prefix = setup_git_directory_gently(&nongit);
++
++	prefix_length = prefix ? strlen(prefix) : 0;
++	if (vpath && prefix)
++		vpath = prefix_filename(prefix, prefix_length, vpath);
+ 
+ 	git_config(git_default_config, NULL);
+ 
+--- a/t/t1007-hash-object.sh
++++ b/t/t1007-hash-object.sh
+@@ -121,6 +121,17 @@ test_expect_success 'check that appropri
+ 	git config --unset core.autocrlf
+ '
+ 
++test_expect_success 'gitattributes also work in a subdirectory' '
++	mkdir subdir &&
++	(
++		cd subdir &&
++		subdir_sha0=$(git hash-object ../file0) &&
++		subdir_sha1=$(git hash-object ../file1) &&
++		test "$file0_sha" = "$subdir_sha0" &&
++		test "$file1_sha" = "$subdir_sha1"
++	)
++'
++
+ test_expect_success 'check that --no-filters option works' '
+ 	echo fooQ | tr Q "\\015" >file0 &&
+ 	cp file0 file1 &&

@@ -21,7 +21,7 @@ diff --git a/utf8.c b/utf8.c
 index 7d2d6a0117..840e1af91c 100644
 --- a/utf8.c
 +++ b/utf8.c
-@@ -609,31 +609,65 @@ static ucs_char_t next_hfs_char(const char **in)
+@@ -609,34 +609,68 @@ static ucs_char_t next_hfs_char(const char **in)
  	}
  }
  
@@ -99,6 +99,9 @@ index 7d2d6a0117..840e1af91c 100644
 +{
 +	return is_hfs_dot_str(path, "gitattributes");
 +}
+ 
+ const char utf8_bom[] = "\357\273\277";
+ 
 diff --git a/utf8.h b/utf8.h
 index e4d9183c5f..f4e1d4ad5e 100644
 --- a/utf8.h

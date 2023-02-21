@@ -1,0 +1,43 @@
+From e61a509a497520550b5b84b753a95549158f9f1c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Nguy=E1=BB=85n=20Th=C3=A1i=20Ng=E1=BB=8Dc=20Duy?=
+ <pclouds@gmail.com>
+Date: Sun, 30 Nov 2014 15:24:43 +0700
+Subject: [PATCH] setup.c: detect $GIT_COMMON_DIR
+ check_repository_format_gently()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Nguyễn Thái Ngọc Duy <pclouds@gmail.com>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ setup.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/setup.c b/setup.c
+index 00a23e6edf..1d4f1aad39 100644
+--- a/setup.c
++++ b/setup.c
+@@ -346,6 +346,10 @@ static int check_repository_format_gently(const char *gitdir, int *nongit_ok)
+ 	const char *repo_config;
+ 	int ret = 0;
+ 
++	get_common_dir(&sb, gitdir);
++	strbuf_addstr(&sb, "/config");
++	repo_config = sb.buf;
++
+ 	/*
+ 	 * git_config() can't be used here because it calls git_pathdup()
+ 	 * to get $GIT_CONFIG/config. That call will make setup_git_env()
+@@ -355,8 +359,6 @@ static int check_repository_format_gently(const char *gitdir, int *nongit_ok)
+ 	 * Use a gentler version of git_config() to check if this repo
+ 	 * is a good one.
+ 	 */
+-	strbuf_addf(&sb, "%s/config", gitdir);
+-	repo_config = sb.buf;
+ 	git_config_early(check_repository_format_version, NULL, repo_config);
+ 	if (GIT_REPO_VERSION < repository_format_version) {
+ 		if (!nongit_ok)
+-- 
+2.30.2
+

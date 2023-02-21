@@ -1,0 +1,71 @@
+From 475b362c2a326ddc9987ee0ff6448e795f009d5d Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Mon, 12 Sep 2016 20:23:27 -0700
+Subject: [PATCH] diff: skip implicit no-index check when given --no-index
+
+We can invoke no-index mode in two ways: by an explicit
+request from the user, or implicitly by noticing that we
+have two paths, and at least one is outside the repository.
+
+If the user already told us --no-index, there is no need for
+us to do the implicit test at all.  However, we currently
+do, and downgrade our "explicit" to DIFF_NO_INDEX_IMPLICIT.
+
+This doesn't have any user-visible behavior, though it's not
+immediately obvious why. We only trigger the implicit check
+when we have exactly two non-option arguments. And the only
+code that cares about implicit versus explicit is an error
+message that we show when we _don't_ have two non-option
+arguments.
+
+However, it's worth fixing anyway. Besides being slightly
+more efficient, it makes the code easier to follow, which
+will help when we modify it in future patches.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ builtin/diff.c | 25 +++++++++++++------------
+ 1 file changed, 13 insertions(+), 12 deletions(-)
+
+diff --git a/builtin/diff.c b/builtin/diff.c
+index d6b8f9834d..7b2a7448ed 100644
+--- a/builtin/diff.c
++++ b/builtin/diff.c
+@@ -301,20 +301,21 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
+ 			break;
+ 	}
+ 
+-	if (!no_index)
++	if (!no_index) {
+ 		prefix = setup_git_directory_gently(&nongit);
+ 
+-	/*
+-	 * Treat git diff with at least one path outside of the
+-	 * repo the same as if the command would have been executed
+-	 * outside of a git repository.  In this case it behaves
+-	 * the same way as "git diff --no-index <a> <b>", which acts
+-	 * as a colourful "diff" replacement.
+-	 */
+-	if (nongit || ((argc == i + 2) &&
+-		       (!path_inside_repo(prefix, argv[i]) ||
+-			!path_inside_repo(prefix, argv[i + 1]))))
+-		no_index = DIFF_NO_INDEX_IMPLICIT;
++		/*
++		 * Treat git diff with at least one path outside of the
++		 * repo the same as if the command would have been executed
++		 * outside of a git repository.  In this case it behaves
++		 * the same way as "git diff --no-index <a> <b>", which acts
++		 * as a colourful "diff" replacement.
++		 */
++		if (nongit || ((argc == i + 2) &&
++			       (!path_inside_repo(prefix, argv[i]) ||
++				!path_inside_repo(prefix, argv[i + 1]))))
++			no_index = DIFF_NO_INDEX_IMPLICIT;
++	}
+ 
+ 	if (!no_index)
+ 		gitmodules_config();
+-- 
+2.30.2
+

@@ -1,0 +1,195 @@
+From 7875acb6ecf85a7dc29554d193955ce5e265764f Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Fri, 11 Mar 2016 17:36:49 -0500
+Subject: [PATCH] wrap shared_repository global in get/set accessors
+
+It would be useful to control access to the global
+shared_repository, so that we can lazily load its config.
+The first step to doing so is to make sure all access
+goes through a set of functions.
+
+This step is purely mechanical, and should result in no
+change of behavior.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ builtin/init-db.c | 24 ++++++++++++------------
+ cache.h           |  4 +++-
+ environment.c     | 13 ++++++++++++-
+ path.c            | 10 +++++-----
+ setup.c           |  2 +-
+ 5 files changed, 33 insertions(+), 20 deletions(-)
+
+--- a/builtin/init-db.c
++++ b/builtin/init-db.c
+@@ -216,13 +216,13 @@ static int create_default_files(const ch
+ 
+ 	/* reading existing config may have overwrote it */
+ 	if (init_shared_repository != -1)
+-		shared_repository = init_shared_repository;
++		set_shared_repository(init_shared_repository);
+ 
+ 	/*
+ 	 * We would have created the above under user's umask -- under
+ 	 * shared-repository settings, we would need to fix them up.
+ 	 */
+-	if (shared_repository) {
++	if (get_shared_repository()) {
+ 		adjust_shared_perm(get_git_dir());
+ 		adjust_shared_perm(git_path("refs"));
+ 		adjust_shared_perm(git_path("refs/heads"));
+@@ -388,7 +388,7 @@ int init_db(const char *template_dir, un
+ 
+ 	create_object_directory();
+ 
+-	if (shared_repository) {
++	if (get_shared_repository()) {
+ 		char buf[10];
+ 		/* We do not spell "group" and such, so that
+ 		 * the configuration can be read by older version
+@@ -396,12 +396,12 @@ int init_db(const char *template_dir, un
+ 		 * and compatibility values for PERM_GROUP and
+ 		 * PERM_EVERYBODY.
+ 		 */
+-		if (shared_repository < 0)
++		if (get_shared_repository() < 0)
+ 			/* force to the mode value */
+-			sprintf(buf, "0%o", -shared_repository);
+-		else if (shared_repository == PERM_GROUP)
++			sprintf(buf, "0%o", -get_shared_repository());
++		else if (get_shared_repository() == PERM_GROUP)
+ 			sprintf(buf, "%d", OLD_PERM_GROUP);
+-		else if (shared_repository == PERM_EVERYBODY)
++		else if (get_shared_repository() == PERM_EVERYBODY)
+ 			sprintf(buf, "%d", OLD_PERM_EVERYBODY);
+ 		else
+ 			die("oops");
+@@ -417,7 +417,7 @@ int init_db(const char *template_dir, un
+ 		   "", and the last '%s%s' is the verbatim directory name. */
+ 		printf(_("%s%s Git repository in %s%s\n"),
+ 		       reinit ? _("Reinitialized existing") : _("Initialized empty"),
+-		       shared_repository ? _(" shared") : "",
++		       get_shared_repository() ? _(" shared") : "",
+ 		       git_dir, len && git_dir[len-1] != '/' ? "/" : "");
+ 	}
+ 
+@@ -510,8 +510,8 @@ int cmd_init_db(int argc, const char **a
+ 				 * and we know shared_repository should always be 0;
+ 				 * but just in case we play safe.
+ 				 */
+-				saved = shared_repository;
+-				shared_repository = 0;
++				saved = get_shared_repository();
++				set_shared_repository(0);
+ 				switch (safe_create_leading_directories_const(argv[0])) {
+ 				case SCLD_OK:
+ 				case SCLD_PERMS:
+@@ -523,7 +523,7 @@ int cmd_init_db(int argc, const char **a
+ 					die_errno(_("cannot mkdir %s"), argv[0]);
+ 					break;
+ 				}
+-				shared_repository = saved;
++				set_shared_repository(saved);
+ 				if (mkdir(argv[0], 0777) < 0)
+ 					die_errno(_("cannot mkdir %s"), argv[0]);
+ 				mkdir_tried = 1;
+@@ -542,7 +542,7 @@ int cmd_init_db(int argc, const char **a
+ 	}
+ 
+ 	if (init_shared_repository != -1)
+-		shared_repository = init_shared_repository;
++		set_shared_repository(init_shared_repository);
+ 
+ 	/*
+ 	 * GIT_WORK_TREE makes sense only in conjunction with GIT_DIR
+--- a/cache.h
++++ b/cache.h
+@@ -627,7 +627,6 @@ extern int prefer_symlink_refs;
+ extern int log_all_ref_updates;
+ extern int warn_ambiguous_refs;
+ extern int warn_on_object_refname_ambiguity;
+-extern int shared_repository;
+ extern const char *apply_default_whitespace;
+ extern const char *apply_default_ignorewhitespace;
+ extern const char *git_attributes_file;
+@@ -640,6 +639,9 @@ extern size_t delta_base_cache_limit;
+ extern unsigned long big_file_threshold;
+ extern unsigned long pack_size_limit_cfg;
+ 
++void set_shared_repository(int value);
++int get_shared_repository(void);
++
+ /*
+  * Do replace refs need to be checked this run?  This variable is
+  * initialized to true unless --no-replace-object is used or
+--- a/environment.c
++++ b/environment.c
+@@ -27,7 +27,6 @@ int warn_on_object_refname_ambiguity = 1
+ int repository_format_version;
+ const char *git_commit_encoding;
+ const char *git_log_output_encoding;
+-int shared_repository = PERM_UMASK;
+ const char *apply_default_whitespace;
+ const char *apply_default_ignorewhitespace;
+ const char *git_attributes_file;
+@@ -313,3 +312,15 @@ const char *get_commit_output_encoding(v
+ {
+ 	return git_commit_encoding ? git_commit_encoding : "UTF-8";
+ }
++
++static int the_shared_repository = PERM_UMASK;
++
++void set_shared_repository(int value)
++{
++	the_shared_repository = value;
++}
++
++int get_shared_repository(void)
++{
++	return the_shared_repository;
++}
+--- a/path.c
++++ b/path.c
+@@ -452,17 +452,17 @@ static int calc_shared_perm(int mode)
+ {
+ 	int tweak;
+ 
+-	if (shared_repository < 0)
+-		tweak = -shared_repository;
++	if (get_shared_repository() < 0)
++		tweak = -get_shared_repository();
+ 	else
+-		tweak = shared_repository;
++		tweak = get_shared_repository();
+ 
+ 	if (!(mode & S_IWUSR))
+ 		tweak &= ~0222;
+ 	if (mode & S_IXUSR)
+ 		/* Copy read bits to execute bits */
+ 		tweak |= (tweak & 0444) >> 2;
+-	if (shared_repository < 0)
++	if (get_shared_repository() < 0)
+ 		mode = (mode & ~0777) | tweak;
+ 	else
+ 		mode |= tweak;
+@@ -475,7 +475,7 @@ int adjust_shared_perm(const char *path)
+ {
+ 	int old_mode, new_mode;
+ 
+-	if (!shared_repository)
++	if (!get_shared_repository())
+ 		return 0;
+ 	if (get_st_mode_bits(path, &old_mode) < 0)
+ 		return -1;
+--- a/setup.c
++++ b/setup.c
+@@ -351,7 +351,7 @@ static int check_repo_format(const char
+ 	if (strcmp(var, "core.repositoryformatversion") == 0)
+ 		repository_format_version = git_config_int(var, value);
+ 	else if (strcmp(var, "core.sharedrepository") == 0)
+-		shared_repository = git_config_perm(var, value);
++		set_shared_repository(git_config_perm(var, value));
+ 	else if (skip_prefix(var, "extensions.", &ext)) {
+ 		/*
+ 		 * record any known extensions here; otherwise,

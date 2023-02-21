@@ -1,0 +1,37 @@
+From 6c1e654437b7d3fff8bb8315d61afa0e930d6776 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 7 Mar 2017 15:32:32 +0100
+Subject: [PATCH] setup_git_directory(): use is_dir_sep() helper
+
+It is okay in practice to test for forward slashes in the output of
+getcwd(), because we go out of our way to convert backslashes to forward
+slashes in getcwd()'s output on Windows.
+
+Still, the correct way to test for a dir separator is by using the
+helper function we introduced for that very purpose. It also serves as a
+good documentation what the code tries to do (not "how").
+
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ setup.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/setup.c b/setup.c
+index 967f289f1e..4a15b10567 100644
+--- a/setup.c
++++ b/setup.c
+@@ -910,7 +910,9 @@ static const char *setup_git_directory_gently_1(int *nongit_ok)
+ 			return setup_bare_git_dir(&cwd, offset, nongit_ok);
+ 
+ 		offset_parent = offset;
+-		while (--offset_parent > ceil_offset && cwd.buf[offset_parent] != '/');
++		while (--offset_parent > ceil_offset &&
++		       !is_dir_sep(cwd.buf[offset_parent]))
++			; /* continue */
+ 		if (offset_parent <= ceil_offset)
+ 			return setup_nongit(cwd.buf, nongit_ok);
+ 		if (one_filesystem) {
+-- 
+2.30.2
+

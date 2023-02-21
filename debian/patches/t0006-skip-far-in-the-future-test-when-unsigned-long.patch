@@ -1,0 +1,60 @@
+From 6b9c38e14cd3abf9b95cabe8b86954f0c4e94a38 Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Mon, 11 Jul 2016 19:54:18 -0400
+Subject: [PATCH] t0006: skip "far in the future" test when unsigned long is
+ not long enough
+
+Git's source code refers to timestamps as unsigned longs.  On 32-bit
+platforms, as well as on Windows, unsigned long is not large enough
+to capture dates that are "absurdly far in the future".
+
+While we can fix this issue properly by replacing unsigned long with
+a larger type, we want to be a bit more conservative and just skip
+those tests on the maint track.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Helped-by: Johannes Schindelin <Johannes.Schindelin@gmx.de>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ help.c          | 6 ++++++
+ t/t0006-date.sh | 6 +++---
+ t/test-lib.sh   | 9 +++++++++
+ 3 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/help.c b/help.c
+index 19328ea992..2ff3b5a774 100644
+--- a/help.c
++++ b/help.c
+@@ -419,6 +419,12 @@ int cmd_version(int argc, const char **argv, const char *prefix)
+ 	 * with external projects that rely on the output of "git version".
+ 	 */
+ 	printf("git version %s\n", git_version_string);
++	while (*++argv) {
++		if (!strcmp(*argv, "--build-options")) {
++			printf("sizeof-long: %d\n", (int)sizeof(long));
++			/* NEEDSWORK: also save and output GIT-BUILD_OPTIONS? */
++		}
++	}
+ 	return 0;
+ }
+ 
+diff --git a/t/test-lib.sh b/t/test-lib.sh
+index 51e4a88c33..4595734f95 100644
+--- a/t/test-lib.sh
++++ b/t/test-lib.sh
+@@ -1098,3 +1098,12 @@ run_with_limited_cmdline () {
+ 	"$GIT_UNZIP" -v
+ 	test $? -ne 127
+ '
++
++build_option () {
++	git version --build-options |
++	sed -ne "s/^$1: //p"
++}
++
++test_lazy_prereq LONG_IS_64BIT '
++	test 8 -le "$(build_option sizeof-long)"
++'
+-- 
+2.30.2
+

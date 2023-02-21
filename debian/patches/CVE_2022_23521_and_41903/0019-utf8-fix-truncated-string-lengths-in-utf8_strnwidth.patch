@@ -1,0 +1,103 @@
+Backported of:
+
+From 522cc87fdc25449222a5894a428eebf4b8d5eaa9 Mon Sep 17 00:00:00 2001
+From: Patrick Steinhardt <ps@pks.im>
+Date: Thu, 1 Dec 2022 15:46:53 +0100
+Subject: [PATCH 19/25] utf8: fix truncated string lengths in
+ `utf8_strnwidth()`
+
+The `utf8_strnwidth()` function accepts an optional string length as
+input parameter. This parameter can either be set to `-1`, in which case
+we call `strlen()` on the input. Or it can be set to a positive integer
+that indicates a precomputed length, which callers typically compute by
+calling `strlen()` at some point themselves.
+
+The input parameter is an `int` though, whereas `strlen()` returns a
+`size_t`. This can lead to implementation-defined behaviour though when
+the `size_t` cannot be represented by the `int`. In the general case
+though this leads to wrap-around and thus to negative string sizes,
+which is sure enough to not lead to well-defined behaviour.
+
+Fix this by accepting a `size_t` instead of an `int` as string length.
+While this takes away the ability of callers to simply pass in `-1` as
+string length, it really is trivial enough to convert them to instead
+pass in `strlen()` instead.
+
+Signed-off-by: Patrick Steinhardt <ps@pks.im>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+diff --git a/column.c b/column.c
+index 49ab85b..a68d392 100644
+--- a/column.c
++++ b/column.c
+@@ -32,7 +32,7 @@ static int item_length(unsigned int colopts, const char *s)
+ 		i = s - str.buf;
+ 		strbuf_remove(&str, i, len + 3); /* \033[<len><func char> */
+ 	}
+-	len = utf8_strwidth(str.buf);
++	len = utf8_strnwidth(str.buf, strlen(str.buf), 0);
+ 	strbuf_release(&str);
+ 	return len;
+ }
+diff --git a/pretty.c b/pretty.c
+index 119e153..360d493 100644
+--- a/pretty.c
++++ b/pretty.c
+@@ -1338,7 +1338,7 @@ static size_t format_and_pad_commit(struct strbuf *sb, /* in UTF-8 */
+ 		int occupied;
+ 		if (!start)
+ 			start = sb->buf;
+-		occupied = utf8_strnwidth(start, -1, 1);
++		occupied = utf8_strnwidth(start, strlen(start), 1);
+ 		padding = (-padding) - occupied;
+ 	}
+ 	while (1) {
+@@ -1356,7 +1356,7 @@ static size_t format_and_pad_commit(struct strbuf *sb, /* in UTF-8 */
+ 		placeholder++;
+ 		total_consumed++;
+ 	}
+-	len = utf8_strnwidth(local_sb.buf, -1, 1);
++	len = utf8_strnwidth(local_sb.buf, local_sb.len, 1);
+ 
+ 	if (c->flush_type == flush_left_and_steal) {
+ 		const char *ch = sb->buf + sb->len - 1;
+diff --git a/utf8.c b/utf8.c
+index f04c244..0701931 100644
+--- a/utf8.c
++++ b/utf8.c
+@@ -203,13 +203,11 @@ int utf8_width(const char **start, size_t *remainder_p)
+  * string, assuming that the string is utf8.  Returns strlen() instead
+  * if the string does not look like a valid utf8 string.
+  */
+-int utf8_strnwidth(const char *string, int len, int skip_ansi)
++int utf8_strnwidth(const char *string, size_t len, int skip_ansi)
+ {
+ 	int width = 0;
+ 	const char *orig = string;
+ 
+-	if (len == -1)
+-		len = strlen(string);
+ 	while (string && string < orig + len) {
+ 		int skip;
+ 		while (skip_ansi &&
+@@ -222,7 +220,7 @@ int utf8_strnwidth(const char *string, int len, int skip_ansi)
+ 
+ int utf8_strwidth(const char *string)
+ {
+-	return utf8_strnwidth(string, -1, 0);
++	return utf8_strnwidth(string, strlen(string), 0);
+ }
+ 
+ int is_utf8(const char *text)
+diff --git a/utf8.h b/utf8.h
+index da19b43..1525560 100644
+--- a/utf8.h
++++ b/utf8.h
+@@ -5,7 +5,7 @@ typedef unsigned int ucs_char_t;  /* assuming 32bit int */
+ 
+ size_t display_mode_esc_sequence_len(const char *s);
+ int utf8_width(const char **start, size_t *remainder_p);
+-int utf8_strnwidth(const char *string, int len, int skip_ansi);
++int utf8_strnwidth(const char *string, size_t len, int skip_ansi);
+ int utf8_strwidth(const char *string);
+ int is_utf8(const char *text);
+ int is_encoding_utf8(const char *name);

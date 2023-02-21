@@ -1,0 +1,40 @@
+From 27547e5fccda134560ad0441aa5bfa187387cec0 Mon Sep 17 00:00:00 2001
+From: Junio C Hamano <gitster@pobox.com>
+Date: Thu, 16 Apr 2015 10:48:58 -0700
+Subject: [PATCH] attr: skip UTF8 BOM at the beginning of the input file
+
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ attr.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/attr.c b/attr.c
+index cd5469770a..7c530f4d0c 100644
+--- a/attr.c
++++ b/attr.c
+@@ -12,6 +12,7 @@
+ #include "exec_cmd.h"
+ #include "attr.h"
+ #include "dir.h"
++#include "utf8.h"
+ 
+ const char git_attr__true[] = "(builtin)true";
+ const char git_attr__false[] = "\0(builtin)false";
+@@ -369,8 +370,12 @@ static struct attr_stack *read_attr_from_file(const char *path, int macro_ok)
+ 		return NULL;
+ 	}
+ 	res = xcalloc(1, sizeof(*res));
+-	while (fgets(buf, sizeof(buf), fp))
+-		handle_attr_line(res, buf, path, ++lineno, macro_ok);
++	while (fgets(buf, sizeof(buf), fp)) {
++		char *bufp = buf;
++		if (!lineno)
++			skip_utf8_bom(&bufp, strlen(bufp));
++		handle_attr_line(res, bufp, path, ++lineno, macro_ok);
++	}
+ 	fclose(fp);
+ 	return res;
+ }
+-- 
+2.30.2
+

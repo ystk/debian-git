@@ -1,0 +1,51 @@
+From 21627f9b6ddddfeb40a53e116459a86be0520a4e Mon Sep 17 00:00:00 2001
+From: Jeff King <peff@peff.net>
+Date: Fri, 11 Mar 2016 17:36:59 -0500
+Subject: [PATCH] check_repository_format_gently: stop using git_config_early
+
+There's a chicken-and-egg problem with using the regular
+git_config during the repository setup process. We get
+around it here by using a special interface that lets us
+specify the per-repo config, and avoid calling
+git_pathdup().
+
+But this interface doesn't actually make sense. It will look
+in the system and per-user config, too; we definitely would
+not want to accept a core.repositoryformatversion from
+there.
+
+The git_config_from_file interface is a better match, as it
+lets us look at a single file.
+
+Signed-off-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ setup.c | 11 +++--------
+ 1 file changed, 3 insertions(+), 8 deletions(-)
+
+diff --git a/setup.c b/setup.c
+index a02932b969..a6013e6dd3 100644
+--- a/setup.c
++++ b/setup.c
+@@ -409,15 +409,10 @@ static int check_repository_format_gently(const char *gitdir, int *nongit_ok)
+ 	repo_config = sb.buf;
+ 
+ 	/*
+-	 * git_config() can't be used here because it calls git_pathdup()
+-	 * to get $GIT_CONFIG/config. That call will make setup_git_env()
+-	 * set git_dir to ".git".
+-	 *
+-	 * We are in gitdir setup, no git dir has been found useable yet.
+-	 * Use a gentler version of git_config() to check if this repo
+-	 * is a good one.
++	 * Ignore return value; for historical reasons, we must treat a missing
++	 * config file as a noop (git-init relies on this).
+ 	 */
+-	git_config_early(fn, NULL, repo_config);
++	git_config_from_file(fn, repo_config, NULL);
+ 	if (GIT_REPO_VERSION_READ < repository_format_version) {
+ 		if (!nongit_ok)
+ 			die ("Expected git repo version <= %d, found %d",
+-- 
+2.30.2
+

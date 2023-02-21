@@ -1,0 +1,48 @@
+From e1e12e97ac73ded85f7d000da1063a774b3cc14f Mon Sep 17 00:00:00 2001
+From: Patrick Steinhardt <ps@pks.im>
+Date: Thu, 1 Dec 2022 15:45:36 +0100
+Subject: [PATCH 08/25] attr: fix integer overflow with more than INT_MAX
+ macros
+
+Attributes have a field that tracks the position in the `all_attrs`
+array they're stored inside. This field gets set via `hashmap_get_size`
+when adding the attribute to the global map of attributes. But while the
+field is of type `int`, the value returned by `hashmap_get_size` is an
+`unsigned int`. It can thus happen that the value overflows, where we
+would now dereference teh `all_attrs` array at an out-of-bounds value.
+
+We do have a sanity check for this overflow via an assert that verifies
+the index matches the new hashmap's size. But asserts are not a proper
+mechanism to detect against any such overflows as they may not in fact
+be compiled into production code.
+
+Fix this by using an `unsigned int` to track the index and convert the
+assert to a call `die()`.
+
+Reported-by: Jeff King <peff@peff.net>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ attr.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+--- a/attr.c
++++ b/attr.c
+@@ -32,7 +32,7 @@ static const char git_attr__unknown[] =
+ struct git_attr {
+ 	struct git_attr *next;
+ 	unsigned h;
+-	int attr_nr;
++	unsigned int attr_nr;
+ 	char name[FLEX_ARRAY];
+ };
+ static int attr_nr;
+@@ -778,7 +778,8 @@ int git_check_attr(const char *path, int
+ 	collect_all_attrs(path);
+ 
+ 	for (i = 0; i < num; i++) {
+-		const char *value = check_all_attr[check[i].attr->attr_nr].value;
++		unsigned int n = check[i].attr->attr_nr;
++		const char *value = check_all_attr[n].value;
+ 		if (value == ATTR__UNKNOWN)
+ 			value = ATTR__UNSET;
+ 		check[i].value = value;

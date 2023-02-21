@@ -1,0 +1,55 @@
+From dde843e7378f65004415bd108038659de9ce2abd Mon Sep 17 00:00:00 2001
+From: Junio C Hamano <gitster@pobox.com>
+Date: Thu, 16 Apr 2015 10:45:29 -0700
+Subject: [PATCH] utf8-bom: introduce skip_utf8_bom() helper
+
+With the recent change to ignore the UTF8 BOM at the beginning of
+.gitignore files, we now have two codepaths that do such a skipping
+(the other one is for reading the configuration files).
+
+Introduce utf8_bom[] constant string and skip_utf8_bom() helper
+and teach .gitignore code how to use it.
+
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ dir.c  |  9 ++++-----
+ utf8.c | 11 +++++++++++
+ utf8.h |  3 +++
+ 3 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/utf8.c b/utf8.c
+index 520fbb4994..28e6d76a42 100644
+--- a/utf8.c
++++ b/utf8.c
+@@ -633,3 +633,14 @@ int is_hfs_dotgit(const char *path)
+ 
+ 	return 1;
+ }
++
++const char utf8_bom[] = "\357\273\277";
++
++int skip_utf8_bom(char **text, size_t len)
++{
++	if (len < strlen(utf8_bom) ||
++	    memcmp(*text, utf8_bom, strlen(utf8_bom)))
++		return 0;
++	*text += strlen(utf8_bom);
++	return 1;
++}
+diff --git a/utf8.h b/utf8.h
+index e4d9183c5f..e7b2aa4168 100644
+--- a/utf8.h
++++ b/utf8.h
+@@ -13,6 +13,9 @@ int same_encoding(const char *, const char *);
+ __attribute__((format (printf, 2, 3)))
+ int utf8_fprintf(FILE *, const char *, ...);
+ 
++extern const char utf8_bom[];
++extern int skip_utf8_bom(char **, size_t);
++
+ void strbuf_add_wrapped_text(struct strbuf *buf,
+ 		const char *text, int indent, int indent2, int width);
+ void strbuf_add_wrapped_bytes(struct strbuf *buf, const char *data, int len,
+-- 
+2.30.2
+
