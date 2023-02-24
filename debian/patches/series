@@ -50,6 +50,7 @@ utf8-release-strbuf-on-error-return-in-strbuf_utf8_r.patch
 CVE_2022_23521_and_41903/0022-utf8-fix-checking-for-glyph-width-in-strbuf_utf8_rep.patch
 CVE_2022_23521_and_41903/0023-utf8-refactor-strbuf_utf8_replace-to-not-rely-on-pre.patch
 CVE_2022_23521_and_41903/0024-pretty-restrict-input-lengths-for-padding-and-wrappi.patch
+CVE_2022_23521_and_41903/0025-attr-adjust-a-mismatched-data-type.patch
 CVE_2022_23521_and_41903/adding_missing_function.patch
 CVE-2022-39260-1.patch
 CVE-2022-39260-2.patch
@@ -127,3 +128,7 @@ CVE-2022-39253-8.patch
 CVE-2022-39253-9.patch
 CVE-2022-39253-10.patch
 CVE-2022-39253-11.patch
+CVE-2023-22490-1.patch
+CVE-2023-22490-2.patch
+CVE-2023-22490-3.patch
+CVE-2023-23946.patch
