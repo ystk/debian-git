@@ -1,3 +1,17 @@
+git (1:2.1.4-2.1+deb8u14) jessie-security; urgency=high
+
+  * Non-maintainer upload by the ELTS Team.
+  * Backport upstream fixes for CVE-2023-25652, CVE-2023-25815,
+    CVE-2023-29007, CVE-2024-32002 and CVE-2024-32021
+    (Closes: #1034835, #1071160).
+
+  My uploads to other suites contain a backport of commit 9cf8547320, a
+  follow-up fix for CVE-2019-1387.
+  That does not apply to jessie, whose git does not support either
+  parallel cloning or the --recurse-submodules option of git-checkout.
+
+ -- Sean Whitton <spwhitton@spwhitton.name>  Fri, 16 Aug 2024 09:45:46 +0800
+
 git (1:2.1.4-2.1+deb8u13) jessie-security; urgency=medium
 
   * Non-maintainer upload by the ELTS Team.
