@@ -1,3 +1,10 @@
+git (1:2.1.4-2.1+deb8u15) jessie-security; urgency=high
+
+  * Non-maintainer upload by the ELTS Team.
+  * Backport fixes for CVE-2024-50349 & CVE-2024-52006 (Closes: #1093042).
+
+ -- Sean Whitton <spwhitton@spwhitton.name>  Tue, 28 Jan 2025 10:18:32 +0000
+
 git (1:2.1.4-2.1+deb8u14) jessie-security; urgency=high
 
   * Non-maintainer upload by the ELTS Team.

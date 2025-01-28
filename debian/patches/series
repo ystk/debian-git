@@ -79,7 +79,6 @@ lazily-load-core.sharedrepository.patch
 check_repository_format_gently-stop-using-git_config.patch
 config-drop-git_config_early.patch
 setup-make-startup_info-available-everywhere.patch
-
 hash-object-always-try-to-set-up-the-git-repository.patch
 diff-no-index-DWIM-diff-D-F-into-diff-D-F-F.patch
 diff-skip-implicit-no-index-check-when-given-no-inde.patch
@@ -87,7 +86,6 @@ diff-handle-no-index-prefixes-consistently.patch
 diff-always-try-to-set-up-the-repository.patch
 patch-id-use-RUN_SETUP_GENTLY.patch
 config-only-read-.git-config-from-configured-repos.patch
-
 read_early_config-avoid-.git-config-hack-when-unneed.patch
 t7006-replace-dubious-test.patch
 setup_git_directory-use-is_dir_sep-helper.patch
@@ -112,7 +110,6 @@ CVE-2022-29187-3.patch
 CVE-2022-29187-4.patch
 CVE-2022-29187-5.patch
 CVE-2022-29187-6.patch
-
 transport-add-protocol-policy-config-option.patch
 remote-curl-rename-shadowed-options-variable.patch
 http-make-redirects-more-obvious.patch
@@ -138,3 +135,6 @@ CVE-2023-29007-1.patch
 CVE-2023-29007-2.patch
 CVE-2023-29007-3.patch
 CVE-2023-29007-4.patch
+CVE-2024-50349-1.patch
+CVE-2024-50349-2.patch
+CVE-2024-52006.patch
